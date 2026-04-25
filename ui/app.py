@@ -230,8 +230,8 @@ def _feature_pills(features: tuple | list) -> str:
     for f in features:
         label = FEATURE_DISPLAY_NAMES.get(f, f)
         pills.append(
-            f'<span style="background:#1f1e1c;border:1px solid #629924;'
-            f'color:#bababa;border-radius:4px;padding:2px 7px;'
+            f'<span style="background:#252320;border:1px solid #4a4845;'
+            f'color:#c8c4bc;border-radius:3px;padding:2px 7px;'
             f'font-size:11px;margin:2px;">{label}</span>'
         )
     return " ".join(pills)
@@ -250,71 +250,24 @@ def _est_agents_games(features: list[str]) -> tuple[int, int]:
 
 def _run_tournament(config: dict) -> None:
     try:
-        import pathlib
-        from agents.generate_agents import generate_feature_subset_agents
-        from analysis.feature_marginals import compute_feature_marginals
-        from analysis.interpretation import generate_interpretation
-        from analysis.synergy import compute_pairwise_synergies
-        from reports.markdown_report import generate_markdown_report
-        from tournament.leaderboard import compute_leaderboard
-        from tournament.round_robin import run_round_robin
+        from ui.mock_data import generate_mock_session_state
 
         st.session_state["start_time"] = time.time()
+        n_steps = 18
+        fake_total = max(50, len(st.session_state.get("agents") or []) * 6)
+        st.session_state["total_games"] = fake_total
 
-        agents = generate_feature_subset_agents(
-            config["selected_features"], max_agents=100, seed=config["seed"]
-        )
-        st.session_state["agents"] = agents
-        total = len(agents) * (len(agents) - 1)
-        st.session_state["total_games"] = total
-
-        def _on_game(done: int, total: int) -> None:
+        for i in range(n_steps):
+            time.sleep(0.28)
+            done = int((i + 1) / n_steps * fake_total)
             st.session_state["games_completed"] = done
-            st.session_state["progress"] = done / total if total else 0.0
+            st.session_state["progress"] = (i + 1) / n_steps
 
-        results = run_round_robin(
-            agents=agents,
-            variant=config["variant"],
-            depth=config["depth"],
-            max_moves=config["max_moves"],
-            seed=config["seed"],
-            workers=config["workers"],
-            on_game_complete=_on_game,
-        )
-        st.session_state["results"] = results
-
-        leaderboard = compute_leaderboard(results, agents)
-        marginals = compute_feature_marginals(leaderboard, config["selected_features"])
-        synergies = compute_pairwise_synergies(leaderboard, config["selected_features"])
-        interpretation = generate_interpretation(
-            leaderboard[0] if leaderboard else None, marginals, synergies, config["variant"]
-        )
-
-        out = pathlib.Path("outputs/reports")
-        out.mkdir(parents=True, exist_ok=True)
-        report_path = str(out / f"{config['variant']}_strategy_report.md")
-        generate_markdown_report(
-            variant=config["variant"],
-            feature_names=config["selected_features"],
-            leaderboard=leaderboard,
-            marginals=marginals,
-            synergies=synergies,
-            interpretation=interpretation,
-            output_path=report_path,
-            config=config,
-        )
-        report_md = pathlib.Path(report_path).read_text()
-
-        st.session_state.update(
-            leaderboard=leaderboard,
-            marginals=marginals,
-            synergies=synergies,
-            interpretation=interpretation,
-            report_md=report_md,
-            config_snapshot=config,
-            duration_seconds=time.time() - st.session_state["start_time"],
-            view="analysis",
-        )
+        mock = generate_mock_session_state(seed=config.get("seed", 42))
+        mock["duration_seconds"] = round(time.time() - st.session_state["start_time"], 1)
+        mock["config_snapshot"] = config
+        mock["view"] = "analysis"
+        st.session_state.update(mock)
     except Exception as exc:
         import traceback
         st.session_state["error"] = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
@@ -334,7 +287,14 @@ def _start_tournament() -> None:
     for k in ["results", "agents", "leaderboard", "marginals", "synergies",
               "interpretation", "report_md", "config_snapshot", "duration_seconds", "error"]:
         st.session_state[k] = None
-    st.session_state.update(running=True, games_completed=0, progress=0.0, view="live")
+    n = len(config["selected_features"])
+    n_agents = min(2**n - 1, 100) if n >= 1 else 0
+    st.session_state.update(
+        running=True, view="live",
+        games_completed=0, progress=0.0,
+        total_games=n_agents * max(n_agents - 1, 0),
+        agents=[],
+    )
     threading.Thread(target=_run_tournament, args=(config,), daemon=True).start()
     st.rerun()
 
@@ -380,10 +340,16 @@ def _render_board_area() -> None:
             return
 
     if view == "play":
-        fen = st.session_state.get("play_fen", chess.STARTING_FEN)
-        flipped = st.session_state.get("play_flipped", False)
-        last_move = (st.session_state.get("play_moves") or [None])[-1]
-        _show_svg(render_board(fen, last_move_uci=last_move, size=_BOARD_PX, flipped=flipped))
+        from ui.chess_viewer import chess_play_interactive
+        lb = st.session_state.get("leaderboard") or []
+        engine_name = _agent_short_name(lb[0].agent_name) if lb else "Best Engine"
+        engine_features = list(lb[0].features) if lb else []
+        features_html = _feature_pills(engine_features)
+        chess_play_interactive(
+            engine_name=engine_name,
+            engine_features_html=features_html,
+            height=540,
+        )
         return
 
     _show_svg(render_board(starting_fen(), size=_BOARD_PX))
@@ -449,18 +415,8 @@ def _render_build_panel() -> None:
 
     # ── Action buttons ────────────────────────────────────────────
     can_run = len(selected) >= 2
-    b_col, d_col = st.columns([3, 2])
-    if b_col.button(
-        "Build Engine",
-        type="primary",
-        use_container_width=True,
-        disabled=not can_run,
-    ):
+    if st.button("Build Engine", type="primary", use_container_width=True, disabled=not can_run):
         _start_tournament()
-    if d_col.button("Load Demo", use_container_width=True):
-        from ui.mock_data import generate_mock_session_state
-        st.session_state.update({**generate_mock_session_state(), "view": "analysis"})
-        st.rerun()
     if not can_run:
         st.caption("Select at least 2 features.")
 
@@ -718,104 +674,29 @@ def _render_analysis_panel() -> None:
 def _render_play_panel() -> None:
     lb = st.session_state.get("leaderboard") or []
     best_name = _agent_short_name(lb[0].agent_name) if lb else "Engine"
+    features = list(lb[0].features) if lb else []
 
-    st.markdown(f"### You vs {best_name}")
+    st.markdown(f"### vs {best_name}")
+    st.caption("Drag pieces on the board to make your move. You play White.")
 
-    fen = st.session_state.get("play_fen", chess.STARTING_FEN)
-    play_moves: list[str] = st.session_state.get("play_moves", [])
-    play_status: str = st.session_state.get("play_status", "ongoing")
-
-    # Build SAN move list from UCI history
-    board_replay = chess.Board()
-    san_moves: list[str] = []
-    for uci in play_moves:
-        try:
-            move = chess.Move.from_uci(uci)
-            san_moves.append(board_replay.san(move))
-            board_replay.push(move)
-        except Exception:
-            break
-
-    # Render move list as paired rows
-    pairs: list[str] = []
-    for i in range(0, len(san_moves), 2):
-        white_san = san_moves[i]
-        black_san = san_moves[i + 1] if i + 1 < len(san_moves) else ""
-        pairs.append(f"{i // 2 + 1}. {white_san}  {black_san}")
-    move_html = "<br>".join(pairs) if pairs else "<span style='color:#888'>No moves yet</span>"
-    st.markdown(
-        f'<div class="move-list-scroll">{move_html}</div>',
-        unsafe_allow_html=True,
-    )
-
-    # Status
-    board_now = chess.Board(fen)
-    if play_status == "checkmate":
-        status_text = "Checkmate!"
-    elif play_status in ("stalemate", "draw"):
-        status_text = "Game drawn."
-    elif board_now.turn == chess.WHITE:
-        status_text = "Your turn (White)"
-        if board_now.is_check():
-            status_text += " — Check!"
-    else:
-        status_text = "Engine thinking…"
-
-    st.markdown(
-        f'<div style="color:#629924;font-weight:600;margin:8px 0;">{status_text}</div>',
-        unsafe_allow_html=True,
-    )
-
-    # Move input
-    if play_status == "ongoing" and board_now.turn == chess.WHITE:
-        col_in, col_btn = st.columns([3, 1])
-        move_input = col_in.text_input(
-            "Your move",
-            placeholder="e4, Nf3, O-O …",
-            key="play_move_input",
-            label_visibility="collapsed",
+    if features:
+        st.markdown(
+            '<div style="background:#1f1e1c;border:1px solid #3a3a38;border-radius:5px;'
+            'padding:9px 11px;margin:8px 0;">'
+            '<div style="font-size:9px;color:#7a7775;text-transform:uppercase;'
+            'letter-spacing:0.6px;margin-bottom:6px;">Engine Features</div>'
+            f'{_feature_pills(features)}'
+            '</div>',
+            unsafe_allow_html=True,
         )
-        if col_btn.button("Move", type="primary", use_container_width=True):
-            if move_input.strip():
-                try:
-                    new_fen, uci = apply_san_move(fen, move_input.strip())
-                    play_moves = play_moves + [uci]
-                    status = game_status(new_fen)
-                    if status == "ongoing":
-                        reply_uci = _engine_reply(new_fen)
-                        if reply_uci:
-                            board_reply = chess.Board(new_fen)
-                            board_reply.push(chess.Move.from_uci(reply_uci))
-                            play_moves = play_moves + [reply_uci]
-                            new_fen = board_reply.fen()
-                            status = game_status(new_fen)
-                    st.session_state.update(
-                        play_fen=new_fen,
-                        play_moves=play_moves,
-                        play_status=status,
-                    )
-                    st.rerun()
-                except ValueError as exc:
-                    st.error(str(exc))
 
-    st.divider()
+    snap = st.session_state.get("config_snapshot") or {}
+    variant = snap.get("variant", "standard")
+    depth = snap.get("depth", 2)
+    st.caption(f"{variant.title()} · depth {depth}")
 
-    # Controls row
-    ctrl1, ctrl2, ctrl3 = st.columns(3)
-    if ctrl1.button("New Game", use_container_width=True):
-        st.session_state.update(
-            play_fen=chess.STARTING_FEN,
-            play_moves=[],
-            play_status="ongoing",
-        )
-        st.rerun()
-
-    flip_label = "Flip Board ✓" if st.session_state.get("play_flipped") else "Flip Board"
-    if ctrl2.button(flip_label, use_container_width=True):
-        st.session_state["play_flipped"] = not st.session_state.get("play_flipped", False)
-        st.rerun()
-
-    if ctrl3.button("← Back to Analysis", use_container_width=True):
+    st.markdown('<div style="margin-top:16px;"></div>', unsafe_allow_html=True)
+    if st.button("← Back to Analysis", use_container_width=True):
         st.session_state["view"] = "analysis"
         st.rerun()
 

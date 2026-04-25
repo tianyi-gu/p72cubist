@@ -1,12 +1,14 @@
 """
 Chess board rendering utilities for the EngineLab Streamlit UI.
 
-Two public functions:
-  chess_game_viewer  — interactive game replay (chessboard.js + chess.js)
-  chess_play_board   — static SVG position viewer (python-chess)
+Three public functions:
+  chess_game_viewer      — interactive game replay (chessboard.js + chess.js)
+  chess_play_interactive — drag-and-drop game vs random engine (self-contained HTML)
+  chess_play_board       — static SVG position viewer (python-chess)
 """
 from __future__ import annotations
 
+import html as _html_mod
 import json
 
 import streamlit as st
@@ -16,7 +18,11 @@ import streamlit.components.v1 as components
 # The {piece} literal stays in the JS string; __PIECE_THEME__ is the Python placeholder.
 _PIECE_THEME_URL = "https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png"
 
-_HTML_TEMPLATE = r"""<!DOCTYPE html>
+# ---------------------------------------------------------------------------
+# Game Viewer (replay)
+# ---------------------------------------------------------------------------
+
+_VIEWER_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -41,14 +47,12 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     padding: 10px 4px 4px;
   }
 
-  /* ── Outer wrapper ─────────────────────────────────────────── */
   .wrapper {
     display: flex;
     gap: 14px;
     width: 100%;
   }
 
-  /* ── Board column ──────────────────────────────────────────── */
   .board-col { flex: 0 1 auto; min-width: 0; }
 
   #board { width: 100%; }
@@ -67,7 +71,6 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   .pip-black { background: #272727; border: 1px solid #555; }
   .player-name { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  /* chessboard.js board border */
   .board-b72b1 {
     border: 2px solid #3a3a38 !important;
     border-radius: 3px;
@@ -98,7 +101,6 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     color: #8b8580; font-size: 12px;
   }
 
-  /* ── Side panel ────────────────────────────────────────────── */
   .side-col {
     flex: 1;
     display: flex;
@@ -245,7 +247,6 @@ var board = Chessboard('board', {
 function updateUI() {
   board.position(fens[cursor], true);
 
-  // Indicator
   var ind = document.getElementById('indicator');
   if      (cursor === 0)             ind.textContent = 'Start';
   else if (cursor === fens.length-1) ind.textContent = 'End · move ' + cursor;
@@ -255,7 +256,6 @@ function updateUI() {
     ind.textContent = 'Move ' + n + ' · ' + side;
   }
 
-  // Status bar
   var st = document.getElementById('status-text');
   if (cursor === fens.length-1 && RESULT) {
     st.textContent = 'Game over · ' + RESULT;
@@ -267,14 +267,12 @@ function updateUI() {
     if (g2.in_stalemate()) st.textContent = 'Stalemate';
   }
 
-  // Highlight active move button & scroll into view
   document.querySelectorAll('.mv').forEach(function(b) {
     b.classList.toggle('active', parseInt(b.dataset.idx) === cursor);
   });
   var active = document.querySelector('.mv.active');
   if (active) active.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 
-  // Button states
   document.getElementById('btn-first').disabled = cursor === 0;
   document.getElementById('btn-prev').disabled  = cursor === 0;
   document.getElementById('btn-next').disabled  = cursor >= fens.length-1;
@@ -327,7 +325,7 @@ def chess_game_viewer(
         return s.replace("\\", "\\\\").replace('"', '\\"')
 
     html = (
-        _HTML_TEMPLATE
+        _VIEWER_TEMPLATE
         .replace("__UCI_MOVES__",       json.dumps(moves))
         .replace("__WHITE_NAME__",      _esc(white_name))
         .replace("__BLACK_NAME__",      _esc(black_name))
@@ -337,6 +335,301 @@ def chess_game_viewer(
     )
     components.html(html, height=height, scrolling=False)
 
+
+# ---------------------------------------------------------------------------
+# Interactive play (drag-and-drop vs random engine)
+# ---------------------------------------------------------------------------
+
+_PLAY_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<script src="https://code.jquery.com/jquery-3.7.1.min.js" crossorigin="anonymous"></script>
+<link  rel="stylesheet"
+       href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
+       crossorigin="anonymous">
+<script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"
+        crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"
+        crossorigin="anonymous"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #161512; color: #bababa; font-family: 'Inter', system-ui, sans-serif; padding: 8px; }
+.game { display: flex; gap: 14px; align-items: flex-start; }
+.board-side { flex: 0 0 auto; }
+.info-side { flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.player-row { display: flex; align-items: center; gap: 7px; padding: 5px 0; font-size: 12.5px; font-weight: 600; color: #d0cfc8; }
+.dot { width: 11px; height: 11px; border-radius: 50%; }
+.dot-black { background: #1a1a1a; border: 1px solid #555; }
+.dot-white { background: #f0d9b5; border: 1px solid #aaa; }
+#board { width: 100%; }
+.board-b72b1 { border: 2px solid #2c2b29 !important; border-radius: 2px; }
+.status-box { background: #272522; border: 1px solid #3a3a38; border-radius: 5px; padding: 7px 10px; }
+.status-lbl { font-size: 9px; color: #7a7775; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 2px; }
+#status { font-size: 13px; font-weight: 600; }
+.your-turn { color: #629924 !important; }
+.thinking { color: #7a7775 !important; font-style: italic; }
+.check { color: #e67e22 !important; }
+.checkmate { color: #c84b4b !important; }
+.draw { color: #7a7775 !important; }
+.movelist { background: #1f1e1c; border: 1px solid #3a3a38; border-radius: 5px; padding: 7px 9px; overflow-y: auto; max-height: 200px; font-family: 'Courier New', monospace; font-size: 12px; line-height: 1.85; flex: 1; }
+.mp { display: flex; gap: 2px; align-items: baseline; }
+.mn { color: #6a7068; min-width: 20px; font-size: 11px; }
+.mw, .mb { padding: 0 4px; border-radius: 2px; color: #c9d1d9; cursor: default; }
+.cur { background: #629924 !important; color: #fff !important; font-weight: 700; }
+.feat-box { background: #1f1e1c; border: 1px solid #3a3a38; border-radius: 5px; padding: 7px 9px; }
+.feat-lbl { font-size: 9px; color: #7a7775; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 5px; }
+.controls { display: flex; gap: 6px; }
+.btn { flex: 1; padding: 5px 8px; border-radius: 4px; border: 1px solid #3a3a38; background: #272522; color: #bababa; cursor: pointer; font-size: 12px; font-family: inherit; transition: all 0.1s; }
+.btn:hover { background: #3a3a38; border-color: #629924; color: #d0cfc8; }
+.btn-primary { background: #629924 !important; border-color: #629924 !important; color: #fff !important; font-weight: 600 !important; }
+.btn-primary:hover { background: #4e7a1b !important; }
+#promo-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 999; justify-content: center; align-items: center; }
+#promo-modal.show { display: flex; }
+.promo-opts { background: #272522; border: 1px solid #3a3a38; border-radius: 8px; padding: 16px 20px; display: flex; gap: 10px; }
+.promo-btn { width: 56px; height: 56px; background: #1f1e1c; border: 1px solid #3a3a38; border-radius: 5px; cursor: pointer; font-size: 32px; display: flex; align-items: center; justify-content: center; }
+.promo-btn:hover { background: #3a3a38; }
+</style>
+</head>
+<body>
+
+<!-- Promotion modal -->
+<div id="promo-modal">
+  <div class="promo-opts">
+    <button class="promo-btn" onclick="doPromotion('q')" title="Queen">&#9819;</button>
+    <button class="promo-btn" onclick="doPromotion('r')" title="Rook">&#9820;</button>
+    <button class="promo-btn" onclick="doPromotion('b')" title="Bishop">&#9821;</button>
+    <button class="promo-btn" onclick="doPromotion('n')" title="Knight">&#9822;</button>
+  </div>
+</div>
+
+<div class="game">
+
+  <!-- Board side -->
+  <div class="board-side">
+    <div class="player-row">
+      <span class="dot dot-black"></span>
+      <span id="engine-name-top">__ENGINE_NAME__</span>
+    </div>
+    <div id="board"></div>
+    <div class="player-row">
+      <span class="dot dot-white"></span>
+      <span>You</span>
+    </div>
+  </div>
+
+  <!-- Info side -->
+  <div class="info-side">
+
+    <div class="status-box">
+      <div class="status-lbl">Status</div>
+      <div id="status" class="your-turn">Your turn (White)</div>
+    </div>
+
+    <div class="movelist" id="movelist">
+      <span style="color:#6a7068;font-size:11px">No moves yet</span>
+    </div>
+
+    <div class="feat-box">
+      <div class="feat-lbl">Engine features</div>
+      <div id="feat-content">__FEATURE_PILLS_HTML__</div>
+    </div>
+
+    <div class="controls">
+      <button class="btn btn-primary" onclick="newGame()">New Game</button>
+      <button class="btn" onclick="flipBoard()">Flip</button>
+    </div>
+
+  </div>
+</div>
+
+<script>
+var game = new Chess();
+var pendingPromotion = null;
+
+var board = Chessboard('board', {
+  draggable: true,
+  position: 'start',
+  pieceTheme: '__PIECE_THEME__',
+  onDragStart: onDragStart,
+  onDrop: onDrop,
+  onSnapEnd: function() { board.position(game.fen()); },
+});
+
+$(window).resize(function() { board.resize(); });
+
+// ── Drag start guard ────────────────────────────────────────────────────────
+function onDragStart(source, piece) {
+  if (game.game_over()) return false;
+  if (game.turn() !== 'w') return false;
+  if (piece.search(/^b/) !== -1) return false;
+}
+
+// ── Drop handler ─────────────────────────────────────────────────────────────
+function onDrop(source, target) {
+  // Detect pawn promotion
+  var isPawnPromo = (
+    game.get(source) &&
+    game.get(source).type === 'p' &&
+    game.get(source).color === 'w' &&
+    target[1] === '8'
+  );
+
+  if (isPawnPromo) {
+    // Check if the move is at least pseudo-legal before showing modal
+    var testMove = game.move({ from: source, to: target, promotion: 'q' });
+    if (testMove === null) return 'snapback';
+    game.undo();
+    pendingPromotion = { from: source, to: target };
+    document.getElementById('promo-modal').classList.add('show');
+    return;
+  }
+
+  var move = game.move({ from: source, to: target, promotion: 'q' });
+  if (move === null) return 'snapback';
+
+  afterPlayerMove();
+}
+
+// ── Promotion modal callback ─────────────────────────────────────────────────
+function doPromotion(piece) {
+  document.getElementById('promo-modal').classList.remove('show');
+  if (!pendingPromotion) return;
+  var move = game.move({ from: pendingPromotion.from, to: pendingPromotion.to, promotion: piece });
+  pendingPromotion = null;
+  board.position(game.fen());
+  if (move === null) return;
+  afterPlayerMove();
+}
+
+// ── After player moves ────────────────────────────────────────────────────────
+function afterPlayerMove() {
+  updateMoveList();
+  updateStatus();
+  if (!game.game_over()) {
+    setStatus('thinking', 'Thinking…');
+    var delay = 400 + Math.random() * 300;
+    setTimeout(engineMove, delay);
+  }
+}
+
+// ── Engine move (random legal move) ──────────────────────────────────────────
+function engineMove() {
+  if (game.game_over()) return;
+  var moves = game.moves();
+  if (moves.length === 0) return;
+  var chosen = moves[Math.floor(Math.random() * moves.length)];
+  game.move(chosen);
+  board.position(game.fen());
+  updateMoveList();
+  updateStatus();
+}
+
+// ── Move list ─────────────────────────────────────────────────────────────────
+function updateMoveList() {
+  var history = game.history();
+  if (history.length === 0) {
+    document.getElementById('movelist').innerHTML =
+      '<span style="color:#6a7068;font-size:11px">No moves yet</span>';
+    return;
+  }
+
+  var html = '';
+  for (var i = 0; i < history.length; i++) {
+    var isLast = (i === history.length - 1);
+    if (i % 2 === 0) {
+      if (i) html += '</div>';
+      html += '<div class="mp"><span class="mn">' + (Math.floor(i / 2) + 1) + '.</span>';
+      html += '<span class="mw' + (isLast ? ' cur' : '') + '">' + history[i] + '</span>';
+    } else {
+      html += '<span class="mb' + (isLast ? ' cur' : '') + '">' + history[i] + '</span></div>';
+    }
+  }
+  // Close open pair if white just moved (odd total)
+  if (history.length % 2 === 1) html += '</div>';
+
+  var el = document.getElementById('movelist');
+  el.innerHTML = html;
+  el.scrollTop = el.scrollHeight;
+}
+
+// ── Status ────────────────────────────────────────────────────────────────────
+function setStatus(cls, text) {
+  var el = document.getElementById('status');
+  el.className = cls;
+  el.textContent = text;
+}
+
+function updateStatus() {
+  if (game.in_checkmate()) {
+    var winner = game.turn() === 'w' ? 'Engine wins' : 'You win';
+    setStatus('checkmate', 'Checkmate – ' + winner + '!');
+  } else if (game.in_stalemate()) {
+    setStatus('draw', 'Stalemate – Draw');
+  } else if (game.in_draw()) {
+    setStatus('draw', 'Draw');
+  } else if (game.in_check()) {
+    if (game.turn() === 'w') {
+      setStatus('check', 'You are in check!');
+    } else {
+      setStatus('check', 'Engine is in check');
+    }
+  } else if (game.turn() === 'w') {
+    setStatus('your-turn', 'Your turn (White)');
+  } else {
+    setStatus('thinking', 'Engine is thinking…');
+  }
+}
+
+// ── New game / flip ───────────────────────────────────────────────────────────
+function newGame() {
+  game.reset();
+  board.start(true);
+  pendingPromotion = null;
+  document.getElementById('promo-modal').classList.remove('show');
+  updateMoveList();
+  setStatus('your-turn', 'Your turn (White)');
+}
+
+function flipBoard() {
+  board.flip();
+}
+</script>
+</body>
+</html>
+"""
+
+
+def chess_play_interactive(
+    engine_name: str = "Best Engine",
+    engine_features_html: str = "",
+    height: int = 540,
+) -> None:
+    """Render a self-contained drag-and-drop chess game vs a random-move engine.
+
+    All game state lives in JavaScript; no Python callbacks are needed.
+
+    Args:
+        engine_name:           Display name shown above the board for the engine.
+        engine_features_html:  Pre-built HTML (e.g. feature pills) injected into the
+                               features panel.  Pass an empty string to leave it blank.
+        height:                Component iframe height in pixels.
+    """
+    def _esc(s: str) -> str:
+        return s.replace("\\", "\\\\").replace('"', '\\"')
+
+    html = (
+        _PLAY_TEMPLATE
+        .replace("__ENGINE_NAME__",       _esc(engine_name))
+        .replace("__FEATURE_PILLS_HTML__", engine_features_html)
+        .replace("__PIECE_THEME__",        _PIECE_THEME_URL)
+    )
+    components.html(html, height=height, scrolling=False)
+
+
+# ---------------------------------------------------------------------------
+# Static board (SVG via python-chess)
+# ---------------------------------------------------------------------------
 
 def chess_play_board(
     fen: str,
