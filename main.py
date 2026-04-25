@@ -93,7 +93,7 @@ def tournament(
     from tournament.leaderboard import compute_leaderboard
     from tournament.results_io import save_results_json
 
-    agents = _get_agents()
+    agents = _get_agents(max_agents=max_agents, seed=seed)
     console.print(f"[bold]Tournament[/bold]: {len(agents)} agents, {variant}")
     console.print(f"Games: {len(agents) * (len(agents) - 1)}")
 
@@ -165,7 +165,7 @@ def full_pipeline(
     console.print()
 
     # Step 1: Generate agents
-    agents = _get_agents()
+    agents = _get_agents(max_agents=max_agents, seed=seed)
     feature_names = sorted({f for a in agents for f in a.features})
     console.print(f"Features: {', '.join(feature_names)}")
     console.print(f"Agents: {len(agents)}")
@@ -214,7 +214,7 @@ def full_pipeline(
     console.print(f"Report saved to {report_path}")
 
 
-def _get_agents():
+def _get_agents(max_agents: int = 100, seed: int = 42):
     """Get agents — try real generation, fall back to material-only."""
     from agents.feature_subset_agent import FeatureSubsetAgent
     try:
@@ -222,7 +222,9 @@ def _get_agents():
         from features.registry import get_feature_names
         feature_names = get_feature_names()
         if feature_names:
-            return generate_feature_subset_agents(feature_names)
+            return generate_feature_subset_agents(
+                feature_names, max_agents=max_agents, seed=seed,
+            )
     except (NotImplementedError, ImportError):
         pass
 

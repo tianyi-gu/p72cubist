@@ -71,8 +71,8 @@ def play_game(
     gen_legal_fn = get_generate_legal_moves(variant)
 
     # Build engines for each side
-    white_engine = _make_engine(white_agent, depth, seed)
-    black_engine = _make_engine(black_agent, depth, seed)
+    white_engine = _make_engine(white_agent, depth, seed, variant=variant)
+    black_engine = _make_engine(black_agent, depth, seed, variant=variant)
 
     white_nodes: list[int] = []
     black_nodes: list[int] = []
@@ -121,6 +121,21 @@ def play_game(
 
         board = apply_fn(board, move)
 
+        # Check for terminal state set by variant-specific apply
+        # (e.g., atomic king explosion, antichess piece depletion)
+        if board.is_terminal():
+            return GameResult(
+                white_agent=white_agent.name,
+                black_agent=black_agent.name,
+                winner=board.winner,
+                moves=ply + 1,
+                termination_reason="king_exploded" if board.winner else "stalemate",
+                white_avg_nodes=_avg(white_nodes),
+                black_avg_nodes=_avg(black_nodes),
+                white_avg_time=_avg(white_times),
+                black_avg_time=_avg(black_times),
+            )
+
     return GameResult(
         white_agent=white_agent.name,
         black_agent=black_agent.name,
@@ -135,12 +150,15 @@ def play_game(
 
 
 def _make_engine(
-    agent: FeatureSubsetAgent | RandomAgent, depth: int, seed: int | None
+    agent: FeatureSubsetAgent | RandomAgent,
+    depth: int,
+    seed: int | None,
+    variant: str = "standard",
 ) -> AlphaBetaEngine | RandomAgent:
     """Create the appropriate engine for an agent."""
     if isinstance(agent, RandomAgent):
         return agent
-    return AlphaBetaEngine(agent, depth)
+    return AlphaBetaEngine(agent, depth, variant=variant)
 
 
 def _choose_move(
