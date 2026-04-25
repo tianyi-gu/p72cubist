@@ -18,7 +18,7 @@ import streamlit as st
 
 from ui.constants import (
     ALL_FEATURES, FEATURE_DISPLAY_NAMES, SESSION_DEFAULTS,
-    VARIANT_DESCRIPTIONS, VARIANT_RECOMMENDED_FEATURES,
+    VARIANT_DESCRIPTIONS, VARIANT_TOP_8_FEATURES,
 )
 from ui.board import render_board, starting_fen
 from ui.chess_viewer import chess_game_viewer
@@ -163,13 +163,6 @@ HEADER_HTML = (
     '</div>'
 )
 
-def _get_presets(variant: str) -> dict[str, list[str]]:
-    rec = VARIANT_RECOMMENDED_FEATURES.get(variant, VARIANT_RECOMMENDED_FEATURES["standard"])
-    return {
-        "Recommended": rec,
-        "Full":        list(ALL_FEATURES),
-    }
-
 _CHART_THEME = dict(
     paper_bgcolor="#272522",
     plot_bgcolor="#1f1e1c",
@@ -202,11 +195,6 @@ def _feature_pills(features: tuple | list) -> str:
     return " ".join(pills)
 
 
-def _est_agents_games(features: list[str]) -> tuple[int, int]:
-    n = len(features)
-    n_agents = min(2 ** n - 1, 100) if n >= 1 else 0
-    n_games = n_agents * (n_agents - 1)
-    return n_agents, n_games
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +327,99 @@ def _run_tournament_thread(config: dict) -> None:
             st.session_state["view"] = "build"
 
 
+# ---------------------------------------------------------------------------
+# Pre-computed replay pipeline
+# ---------------------------------------------------------------------------
+
+def _run_precomputed_thread(precomputed_path: str, config: dict) -> None:
+    """Load pre-computed results and animate replay progress (~2.5s)."""
+    try:
+        results = load_results_json(precomputed_path)
+        total = len(results)
+
+        with _tournament_lock:
+            st.session_state["total_games"] = total
+
+        # Animate progress over ~2.5 seconds
+        steps = 25
+        for i in range(1, steps + 1):
+            time.sleep(0.10)
+            with _tournament_lock:
+                st.session_state["games_completed"] = int(total * i / steps)
+                st.session_state["progress"] = i / steps
+
+        variant = config["variant"]
+        features = config["selected_features"]
+
+        # Reconstruct agents from result names
+        agent_names: set[str] = set()
+        for r in results:
+            agent_names.add(r.white_agent)
+            agent_names.add(r.black_agent)
+
+        agents = []
+        for name in sorted(agent_names):
+            feats = tuple(name.replace("Agent_", "").split("__"))
+            agents.append(FeatureSubsetAgent(
+                name=name, features=feats,
+                weights={f: 1.0 / len(feats) for f in feats},
+            ))
+
+        leaderboard = compute_leaderboard(results, agents)
+
+        all_feats: set[str] = set()
+        for a in agents:
+            all_feats.update(a.features)
+        feat_names = sorted(all_feats) if not features else features
+
+        marginals = compute_feature_marginals(leaderboard, feat_names)
+        synergies = compute_pairwise_synergies(leaderboard, feat_names)
+
+        best_agent = leaderboard[0] if leaderboard else None
+        interpretation = ""
+        if best_agent:
+            interpretation = generate_interpretation(best_agent, marginals, synergies, variant)
+
+        sample_moves: list[str] = []
+        sample_white, sample_black, sample_result = "White", "Black", ""
+        if results:
+            sample_game = next((r for r in results if r.winner is not None), results[0])
+            sample_moves = getattr(sample_game, "move_list", []) or []
+            sample_white = sample_game.white_agent
+            sample_black = sample_game.black_agent
+            sample_result = (
+                "1-0" if sample_game.winner == "w" else
+                "0-1" if sample_game.winner == "b" else "draw"
+            )
+
+        elapsed = time.time() - st.session_state.get("start_time", time.time())
+        with _tournament_lock:
+            st.session_state.update(
+                results=results,
+                agents=agents,
+                leaderboard=leaderboard,
+                marginals=marginals,
+                synergies=synergies,
+                interpretation=interpretation,
+                report_md="",
+                config_snapshot=config,
+                sample_game_moves=sample_moves,
+                sample_game_white=sample_white,
+                sample_game_black=sample_black,
+                sample_game_result=sample_result,
+                running=False,
+                progress=1.0,
+                games_completed=total,
+                duration_seconds=elapsed,
+            )
+
+    except Exception as exc:
+        with _tournament_lock:
+            st.session_state["error"] = str(exc)
+            st.session_state["running"] = False
+            st.session_state["view"] = "build"
+
+
 def _analyze_results(results, features, variant, config) -> None:
     """Run analysis pipeline on loaded results (no tournament)."""
     # Reconstruct agents from result agent names
@@ -434,10 +515,11 @@ def _analyze_results(results, features, variant, config) -> None:
 # ---------------------------------------------------------------------------
 
 def _start_tournament() -> None:
+    variant = st.session_state["variant"]
     config = {
-        "variant": st.session_state["variant"],
-        "selected_features": list(st.session_state["selected_features"]),
-        "depth": st.session_state["depth"],
+        "variant": variant,
+        "selected_features": list(VARIANT_TOP_8_FEATURES.get(variant, ALL_FEATURES[:8])),
+        "depth": 1,
         "max_moves": 80,
         "seed": 42,
     }
@@ -445,23 +527,27 @@ def _start_tournament() -> None:
               "interpretation", "report_md", "config_snapshot", "duration_seconds", "error"]:
         st.session_state[k] = None
 
-    n = len(config["selected_features"])
-    n_agents = min(2 ** n - 1, 100) if n >= 1 else 0
+    data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outputs", "data")
+    precomputed_path = os.path.join(data_dir, f"tournament_results_{variant}.json")
+
+    if not os.path.exists(precomputed_path):
+        st.session_state["error"] = f"No pre-computed results found for '{variant}'."
+        return
+
     st.session_state.update(
         running=True, view="live",
         games_completed=0, progress=0.0,
-        total_games=n_agents * max(n_agents - 1, 0),
+        total_games=0,
         agents=[],
         start_time=time.time(),
         _tournament_config=config,
     )
 
-    thread = threading.Thread(
-        target=_run_tournament_thread,
-        args=(config,),
+    threading.Thread(
+        target=_run_precomputed_thread,
+        args=(precomputed_path, config),
         daemon=True,
-    )
-    thread.start()
+    ).start()
     st.rerun()
 
 
@@ -572,105 +658,53 @@ def _render_board_area() -> None:
 # ---------------------------------------------------------------------------
 
 def _render_build_panel() -> None:
-    # Load existing results (quick start)
-    st.markdown("### Load Existing Results")
-    data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "data")
-    json_files = []
-    if os.path.isdir(data_dir):
-        json_files = sorted(
-            f for f in os.listdir(data_dir)
-            if f.endswith(".json") and f.startswith("tournament_results")
-        )
-    if json_files:
-        chosen = st.selectbox(
-            "Load saved results",
-            options=[""] + json_files,
-            format_func=lambda f: f.replace("tournament_results_", "").replace(".json", "").title() if f else "Select...",
-            label_visibility="collapsed",
-            key="load_results_select",
-        )
-        if chosen and st.button("Load", type="primary", use_container_width=True):
-            path = os.path.join(data_dir, chosen)
-            results = load_results_json(path)
-            variant = chosen.replace("tournament_results_", "").replace(".json", "")
-            _analyze_results(results, [], variant, {"variant": variant})
-            st.rerun()
-    else:
-        st.caption("No saved results found in outputs/data/.")
+    variant = st.session_state["variant"]
+    data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outputs", "data")
 
-    # Separator
-    st.markdown("---")
-
-    # Build your own engine
-    st.markdown("### Build Your Own Engine")
-    st.caption("Run a new tournament (takes longer)")
-
-    # Variant selector — switching variant auto-loads recommended features
+    # Variant selector
     st.caption("VARIANT")
     v_cols = st.columns(3)
     for col, v in zip(v_cols, ["standard", "atomic", "antichess"]):
-        active = st.session_state["variant"] == v
+        active = variant == v
         label = ("✓ " if active else "") + v.title()
         if col.button(label, key=f"v_{v}", use_container_width=True):
             st.session_state["variant"] = v
-            st.session_state["selected_features"] = list(
-                VARIANT_RECOMMENDED_FEATURES.get(v, ALL_FEATURES)
-            )
             st.rerun()
 
-    variant_desc = VARIANT_DESCRIPTIONS.get(st.session_state["variant"], "")
+    variant_desc = VARIANT_DESCRIPTIONS.get(variant, "")
     if variant_desc:
         st.caption(variant_desc)
 
-    st.markdown('<div style="margin-top:10px;"></div>', unsafe_allow_html=True)
+    st.markdown('<div style="margin-top:14px;"></div>', unsafe_allow_html=True)
 
-    # Feature multiselect + presets
-    st.caption("FEATURES")
-    current_variant = st.session_state["variant"]
-    presets = _get_presets(current_variant)
-    p_cols = st.columns(len(presets))
-    for col, (label, feats) in zip(p_cols, presets.items()):
-        if col.button(label, key=f"p_{label}_{current_variant}", use_container_width=True):
-            st.session_state["selected_features"] = list(feats)
-            st.rerun()
+    # Top-8 features (read-only)
+    st.caption("TOP 8 FEATURES")
+    top8 = VARIANT_TOP_8_FEATURES.get(variant, ALL_FEATURES[:8])
+    st.markdown(_feature_pills(top8), unsafe_allow_html=True)
 
-    selected = st.multiselect(
-        "features",
-        options=ALL_FEATURES,
-        default=st.session_state["selected_features"],
-        format_func=lambda f: FEATURE_DISPLAY_NAMES.get(f, f),
-        label_visibility="collapsed",
-        key="features_multiselect",
-    )
-    st.session_state["selected_features"] = selected
-
-    n_agents, n_games = _est_agents_games(selected)
-    warn = " -- long run" if n_games > 5000 else ""
-    st.caption(f"{n_agents} agents -- {n_games:,} games{warn}")
-
-    st.markdown('<div style="margin-top:10px;"></div>', unsafe_allow_html=True)
-
-    # Depth
-    st.caption("SEARCH DEPTH")
-    depth_labels = ["Fast (1)", "Normal (2)", "Deep (3)"]
-    depth_choice = st.radio(
-        "depth",
-        depth_labels,
-        index=st.session_state["depth"] - 1,
-        horizontal=True,
-        label_visibility="collapsed",
-        key="depth_radio",
-    )
-    st.session_state["depth"] = depth_labels.index(depth_choice) + 1
+    # Tournament stats from pre-computed file
+    precomputed_path = os.path.join(data_dir, f"tournament_results_{variant}.json")
+    if os.path.exists(precomputed_path):
+        try:
+            import json as _json
+            with open(precomputed_path) as _f:
+                _data = _json.load(_f)
+            n_games = len(_data)
+            st.caption(f"{n_games:,} games pre-computed · replays in ~3s")
+        except Exception:
+            st.caption("Pre-computed results ready")
+    else:
+        st.caption("No pre-computed results found for this variant.")
 
     st.markdown('<div style="margin-top:14px;"></div>', unsafe_allow_html=True)
 
-    # Action buttons
-    can_run = len(selected) >= 2
-    if st.button("Build Engine", use_container_width=True, disabled=not can_run):
+    has_data = os.path.exists(precomputed_path)
+    if st.button("Build Engine", type="primary", use_container_width=True, disabled=not has_data):
         _start_tournament()
-    if not can_run:
-        st.caption("Select at least 2 features.")
+
+    if st.session_state.get("error"):
+        st.error(st.session_state["error"])
+        st.session_state["error"] = None
 
 
 # ---------------------------------------------------------------------------
