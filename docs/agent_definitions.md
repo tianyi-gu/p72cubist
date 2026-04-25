@@ -24,10 +24,14 @@ core/move_generation.py
 core/apply_move.py
 variants/__init__.py
 variants/base.py
+variants/standard.py
 variants/atomic.py
+variants/antichess.py          # optional Phase 3
 tests/test_board.py
 tests/test_move_generation.py
+tests/test_standard.py
 tests/test_atomic.py
+tests/test_antichess.py        # optional Phase 3
 ```
 
 ### Must Not Edit
@@ -38,12 +42,13 @@ tests/test_atomic.py
 ### Prompt
 
 ```
-You are implementing Area 1 of EngineLab: core chess state and Atomic
-Chess rules.
+You are implementing Area 1 of EngineLab: core chess state and variant
+rules. BUILD STANDARD CHESS FIRST (Phase 1), then Atomic (Phase 2),
+then optionally Antichess (Phase 3).
 
 Read Instructions.MD and docs/interfaces.md completely before starting.
 
-Implement:
+PHASE 1 -- Standard Chess (build this first, get it fully working):
 1. Board class in core/board.py (8x8 grid, FEN piece chars, deep copy)
 2. Move dataclass in core/move.py (frozen, UCI output)
 3. Square type alias and color helpers in core/types.py
@@ -52,12 +57,29 @@ Implement:
    - Pawn (single push, double push, diagonal capture, queen promotion)
    - Knight, Bishop, Rook, Queen, King
    - generate_moves(board) and generate_moves_for_color(board, color)
+   - CRITICAL: move generation order must be deterministic (iterate
+     pieces row 0-7, col 0-7; destinations in consistent order)
 6. Standard move application in core/apply_move.py
-7. Atomic Chess in variants/atomic.py:
+7. Standard variant in variants/standard.py:
+   - apply_standard_move: move piece, capture if destination occupied,
+     pawn promotion, set winner if king captured
+   - generate_standard_moves: same as generate_moves (no filtering for MVP)
+8. Variant dispatch in variants/base.py:
+   - VARIANT_DISPATCH dict mapping variant name -> functions
+   - get_apply_move(variant), get_generate_legal_moves(variant)
+
+PHASE 2 -- Atomic Chess (add after Phase 1 works):
+9. Atomic variant in variants/atomic.py:
    - apply_atomic_move: explosion on capture (removes capturing piece,
      captured piece, adjacent non-pawn pieces; pawns immune)
    - generate_atomic_moves: filter captures that would explode own king
    - Winner detection on king explosion
+
+PHASE 3 -- Antichess (optional):
+10. Antichess variant in variants/antichess.py:
+    - apply_antichess_move: same as standard
+    - generate_antichess_moves: if captures exist, return only captures
+    - Winner: player with no pieces left wins
 
 Conventions (CRITICAL):
 - FEN piece chars: uppercase=white, lowercase=black, None=empty
@@ -66,21 +88,38 @@ Conventions (CRITICAL):
 - Board.copy() must be a deep copy
 - Do NOT implement castling, en passant, or underpromotion
 
-Verify:
-- Starting position generates exactly 20 white moves
-- pytest tests/test_board.py tests/test_move_generation.py tests/test_atomic.py
+Verify each phase before moving to the next:
+Phase 1: pytest tests/test_board.py tests/test_move_generation.py tests/test_standard.py
+Phase 2: pytest tests/test_atomic.py
+Phase 3: pytest tests/test_antichess.py
 ```
 
 ### Acceptance Criteria
+
+**Phase 1 (Standard -- build first):**
 
 | ID  | Test                                                     |
 |-----|----------------------------------------------------------|
 | 1A  | Board starting position is correct                       |
 | 1B  | 20 pseudo-legal white moves from starting position       |
-| 1C  | Atomic explosion removes correct pieces, pawns survive   |
-| 1D  | Self-destructive captures are filtered out               |
-| 1E  | 100 random atomic plies without crash                    |
-| 1F  | All 3 test files pass                                    |
+| 1C  | Standard captures and promotion work                     |
+| 1D  | 100 random standard plies without crash                  |
+| 1E  | Variant dispatch resolves "standard" correctly            |
+
+**Phase 2 (Atomic):**
+
+| ID  | Test                                                     |
+|-----|----------------------------------------------------------|
+| 1F  | Atomic explosion removes correct pieces, pawns survive   |
+| 1G  | Self-destructive captures are filtered out               |
+| 1H  | 100 random atomic plies without crash                    |
+
+**Phase 3 (Antichess -- optional):**
+
+| ID  | Test                                                     |
+|-----|----------------------------------------------------------|
+| 1I  | Forced capture rule works                                |
+| 1J  | Player with no pieces left wins                          |
 
 ---
 

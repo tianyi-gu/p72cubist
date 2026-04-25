@@ -103,7 +103,38 @@ def generate_moves_for_color(board: Board, color: str) -> list[Move]:
 
 ---
 
-## 5. Atomic Variant
+## 5. Variant Dispatch
+
+```python
+# variants/base.py
+from typing import Callable
+from core.board import Board
+from core.move import Move
+
+VARIANT_DISPATCH: dict[str, dict[str, Callable]]
+# Maps variant name -> {"apply_move": fn, "generate_legal_moves": fn}
+
+def get_apply_move(variant: str) -> Callable[[Board, Move], Board]: ...
+def get_generate_legal_moves(variant: str) -> Callable[[Board], list[Move]]: ...
+def get_supported_variants() -> list[str]: ...
+```
+
+## 6. Standard Chess Variant
+
+```python
+# variants/standard.py
+from core.board import Board
+from core.move import Move
+
+def apply_standard_move(board: Board, move: Move) -> Board:
+    """Apply move under standard rules. Returns new Board (no mutation).
+    Captures remove defender. Sets winner if king captured."""
+
+def generate_standard_moves(board: Board) -> list[Move]:
+    """Legal moves for standard chess. Same as pseudo-legal for MVP."""
+```
+
+## 7. Atomic Chess Variant
 
 ```python
 # variants/atomic.py
@@ -119,9 +150,24 @@ def generate_atomic_moves(board: Board) -> list[Move]:
     captures that would explode the moving side's own king."""
 ```
 
+## 8. Antichess Variant (Optional)
+
+```python
+# variants/antichess.py
+from core.board import Board
+from core.move import Move
+
+def apply_antichess_move(board: Board, move: Move) -> Board:
+    """Apply move under Antichess rules. Same as standard.
+    Sets winner if a player has no pieces left (that player wins)."""
+
+def generate_antichess_moves(board: Board) -> list[Move]:
+    """Legal moves under Antichess: if captures exist, return only captures."""
+```
+
 ---
 
-## 6. Features
+## 9. Features
 
 ```python
 # features/registry.py
@@ -152,7 +198,7 @@ MVP features: `material`, `mobility`, `enemy_king_danger`,
 
 ---
 
-## 7. Feature-Subset Agent
+## 10. Feature-Subset Agent
 
 ```python
 # agents/feature_subset_agent.py
@@ -167,7 +213,7 @@ class FeatureSubsetAgent:
 
 ---
 
-## 8. Agent Generation
+## 11. Agent Generation
 
 ```python
 # agents/generate_agents.py
@@ -182,7 +228,7 @@ def generate_feature_subset_agents(
 
 ---
 
-## 9. Evaluation
+## 12. Evaluation
 
 ```python
 # agents/evaluation.py
@@ -210,7 +256,7 @@ def normalize_feature_value(x: float) -> float:
 
 ---
 
-## 10. Alpha-Beta Engine
+## 13. Alpha-Beta Engine
 
 ```python
 # search/alpha_beta.py
@@ -233,7 +279,7 @@ class AlphaBetaEngine:
 
 ---
 
-## 11. Game Result
+## 14. Game Result
 
 ```python
 # simulation/game.py
@@ -254,7 +300,7 @@ class GameResult:
 
 ---
 
-## 12. Game Simulation
+## 15. Game Simulation
 
 ```python
 # simulation/game.py
@@ -272,7 +318,7 @@ def play_game(
 
 ---
 
-## 13. Random Agent
+## 16. Random Agent
 
 ```python
 # simulation/random_agent.py
@@ -287,7 +333,7 @@ class RandomAgent:
 
 ---
 
-## 14. Round-Robin Tournament
+## 17. Round-Robin Tournament
 
 ```python
 # tournament/round_robin.py
@@ -306,7 +352,7 @@ def run_round_robin(
 
 ---
 
-## 15. Leaderboard
+## 18. Leaderboard
 
 ```python
 # tournament/leaderboard.py
@@ -334,7 +380,7 @@ def compute_leaderboard(
 
 ---
 
-## 16. Result I/O
+## 19. Result I/O
 
 ```python
 # tournament/results_io.py
@@ -347,7 +393,7 @@ def save_results_csv(results: list[GameResult], path: str) -> None: ...
 
 ---
 
-## 17. Feature Marginals
+## 20. Feature Marginals
 
 ```python
 # analysis/feature_marginals.py
@@ -371,7 +417,7 @@ def compute_feature_marginals(
 
 ---
 
-## 18. Pairwise Synergy
+## 21. Pairwise Synergy
 
 ```python
 # analysis/synergy.py
@@ -399,7 +445,7 @@ synergy(a, b) = avg_with_both - avg_with_a - avg_with_b + overall_avg
 
 ---
 
-## 19. Interpretation
+## 22. Interpretation
 
 ```python
 # analysis/interpretation.py
@@ -418,7 +464,7 @@ def generate_interpretation(
 
 ---
 
-## 20. Markdown Report
+## 23. Markdown Report
 
 ```python
 # reports/markdown_report.py

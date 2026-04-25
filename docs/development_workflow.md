@@ -297,3 +297,87 @@ simplifies implementation for two-player zero-sum games.
 
 > Knuth, D. E. & Moore, R. W. (1975). "An Analysis of Alpha-Beta Pruning."
 > *Artificial Intelligence*, 6(4), 293-326.
+
+---
+
+## 8. Zero-Dependency Workstream Split
+
+The 5 development areas (Section 8 of Instructions.MD) organize the code
+by module. But for **developer/agent parallelism**, the natural split is
+into 2 independent workstreams with a single shared interface:
+
+```
+Workstream ENGINE (Areas 1 + 2 + 3)     Workstream HARNESS (Areas 4 + 5)
+================================        ================================
+Board, Move, MoveGen                    Tournament runner
+Variant dispatch (standard, atomic)     Leaderboard
+Features + Registry                     Result I/O
+Evaluation + AlphaBeta                  Analysis (marginals, synergy)
+                                        Report generation
+                                        CLI
+      |                                        |
+      +------ play_game() interface -----------+
+              GameResult dataclass
+```
+
+**Why this works with zero dependencies:**
+
+- **ENGINE** produces a working `play_game(white, black, variant, depth,
+  max_moves, seed) -> GameResult` function. It has no knowledge of
+  tournaments, leaderboards, or analysis.
+
+- **HARNESS** consumes `GameResult` objects. During development, it uses a
+  mock `play_game()` that returns random results:
+
+  ```python
+  def mock_play_game(white, black, **kwargs) -> GameResult:
+      return GameResult(
+          white_agent=white.name, black_agent=black.name,
+          winner=random.choice(["w", "b", None]),
+          moves=random.randint(10, 80),
+          termination_reason="move_cap",
+          white_avg_nodes=0, black_avg_nodes=0,
+          white_avg_time=0, black_avg_time=0,
+      )
+  ```
+
+  This lets HARNESS develop and test its entire pipeline (tournament
+  scheduling, leaderboard computation, analysis, reporting, CLI) with
+  **zero imports from ENGINE**. At integration time, swap the mock for
+  the real `play_game` -- one line change.
+
+### Assignment Options
+
+**Option A: 2 developers, 2 workstreams (most parallel)**
+
+| Developer | Workstream | Scope                  |
+|-----------|------------|------------------------|
+| Dev 1     | ENGINE     | Areas 1 + 2 + 3       |
+| Dev 2     | HARNESS    | Areas 4 + 5            |
+
+Both work simultaneously with zero coordination until integration.
+
+**Option B: 3 developers, 3 workstreams (balanced)**
+
+| Developer | Workstream      | Scope                          |
+|-----------|-----------------|--------------------------------|
+| Dev 1     | CORE            | Area 1 (board + variants)      |
+| Dev 2     | ENGINE          | Areas 2 + 3 (features + search)|
+| Dev 3     | HARNESS         | Areas 4 + 5 (tournament + CLI) |
+
+Dev 2 uses Board stubs until Dev 1 delivers. Dev 3 uses mock play_game
+throughout. Integration order: Dev 1 -> Dev 2 -> Dev 3.
+
+### Runtime Parallelism (Multiprocessing)
+
+Beyond development parallelism, the tournament itself is embarrassingly
+parallel at the game level. Each game is a pure function:
+
+```
+Input:  (white_agent, black_agent, variant, depth, max_moves, seed)
+Output: GameResult
+```
+
+No shared state, no side effects. Use `multiprocessing.Pool` to run games
+across CPU cores. With 4 workers, a 930-game tournament completes ~4x faster.
+See Instructions.MD Section 8 (Area 4) for the implementation pattern.

@@ -203,14 +203,66 @@ or None, a shallow copy of each row suffices).
 
 ---
 
-## 4. Atomic Chess Rules
+## 4. Chess Variant System
 
-Atomic Chess follows standard chess movement rules with critical modifications
-on captures. Implementing these correctly is essential for meaningful games.
+EngineLab compares how strategic features perform across different chess
+variants. Start with standard chess as the baseline, then add variants where
+different strategies should dominate. The most compelling demo shows the
+same five features producing **completely different marginal rankings** under
+different rule sets.
 
-### 4.1 Standard Movement
+### 4.1 Variant Progression (Build Order)
 
-All pieces move identically to standard chess. The MVP scope includes:
+| Phase | Variant         | Key Mechanic                        | Expected Dominant Features     |
+|-------|-----------------|-------------------------------------|--------------------------------|
+| 1     | Standard Chess  | Normal captures, win by king capture| material, mobility             |
+| 2     | Atomic Chess    | Explosion on capture                | king_danger, capture_threats   |
+| 3*    | Antichess       | Must capture, lose pieces to win    | material (NEGATIVE), mobility  |
+
+*Phase 3 is optional but produces the most dramatic analysis contrast.
+
+**Build Phase 1 first.** Get the entire pipeline working end-to-end with
+standard chess before adding any variants. This gives a validated baseline
+and a working system to extend incrementally.
+
+### 4.2 Variant Abstraction
+
+Each variant provides two functions that the rest of the system calls:
+
+```python
+def apply_move(board: Board, move: Move) -> Board:
+    """Apply a move under this variant's rules. Returns a new Board."""
+
+def generate_legal_moves(board: Board) -> list[Move]:
+    """Generate legal moves under this variant's rules."""
+```
+
+Everything else (features, agents, tournament, analysis) is variant-agnostic.
+It calls `apply_move` and `generate_legal_moves` through a dispatch lookup:
+
+```python
+VARIANT_DISPATCH = {
+    "standard": {
+        "apply_move": apply_standard_move,
+        "generate_legal_moves": generate_standard_moves,
+    },
+    "atomic": {
+        "apply_move": apply_atomic_move,
+        "generate_legal_moves": generate_atomic_moves,
+    },
+    "antichess": {
+        "apply_move": apply_antichess_move,
+        "generate_legal_moves": generate_antichess_moves,
+    },
+}
+```
+
+This keeps the variant system simple (no class hierarchy) while supporting
+clean dispatch everywhere via `variant: str` parameters.
+
+### 4.3 Standard Movement (Shared Across All Variants)
+
+All variants share the same piece movement rules. The MVP scope includes:
 
 **Included:**
 - Pawn single push, double push from starting rank, diagonal capture
@@ -228,7 +280,33 @@ All pieces move identically to standard chess. The MVP scope includes:
 - Threefold repetition
 - Fifty-move rule
 
-### 4.2 Explosion Mechanics
+### 4.4 Standard Chess Variant (Phase 1 -- Build First)
+
+Standard chess is the simplest variant and the foundation. Since the MVP
+does not enforce check, the win condition is king capture.
+
+**Move application (`variants/standard.py`):**
+- Move piece from start to end square.
+- If destination has an enemy piece, remove it (standard capture).
+- Handle pawn promotion to queen at the last rank.
+- Toggle `side_to_move`, increment `move_count`.
+- If a king was captured, set `board.winner` to the capturing side.
+
+**Legal move generation:**
+- All pseudo-legal moves from `generate_moves(board)`.
+- No additional filtering needed for standard chess (no check enforcement
+  in MVP).
+
+**Terminal conditions:**
+- King captured (`find_king(color)` returns `None`) -- opponent wins.
+- No legal moves -- side to move loses.
+- Move cap reached -- draw.
+
+### 4.5 Atomic Chess Variant (Phase 2)
+
+Atomic Chess extends standard chess with explosion mechanics on captures.
+
+**Explosion mechanics:**
 
 When a piece captures another piece at square S, an **explosion** occurs:
 
@@ -249,49 +327,81 @@ Explosion radius:     d5  e5  f5
 
 All non-pawn pieces on d3, d4, d5, e3, e5, f3, f4, f5 are destroyed.
 
-### 4.3 Self-Preservation Rule (CRITICAL)
+**Self-preservation rule (CRITICAL):**
 
-**A player may NOT make a capture that would destroy their own king in the
-resulting explosion.**
+A player may NOT make a capture that would destroy their own king in the
+resulting explosion. If the capturing player's king is within Chebyshev
+distance 1 of the capture square, the capture is illegal and must be
+filtered out. This is the one legality filter that Atomic Chess MUST
+implement.
 
-This is a hard legality constraint. If the capturing player's king is within
-Chebyshev distance 1 of the capture square, the capture is illegal and must
-be filtered out.
+**Terminal conditions:**
+- King explosion (`find_king(color)` returns `None`) -- opponent wins.
+- No legal moves (after filtering self-explosive captures) -- side to
+  move loses.
+- Move cap -- draw.
 
-**Implementation approach:** After generating pseudo-legal moves, for each
-capture move, check whether the moving side's king is adjacent to the capture
-square. If so, remove that move from the legal move list.
+### 4.6 Antichess Variant (Phase 3 -- Optional)
 
-This is the one legality filter the MVP MUST implement. Without it, engines
-can make moves that immediately kill their own king, producing nonsensical
-games and corrupting all analysis.
+Antichess (also called Losing Chess or Giveaway) inverts the objective:
+the goal is to **lose all your pieces**. This is analytically valuable
+because features like `material` should have **negative** marginal value
+(less material = closer to winning), creating a dramatic contrast with
+standard chess results.
 
-### 4.4 Terminal State Detection
+**Move application:**
+- Same as standard chess. No special capture mechanics.
+- King has no special status -- it can be captured like any other piece.
 
-A position is terminal when any of:
+**Legal move generation (forced capture rule):**
 
-1. **King explosion:** `board.find_king(color)` returns `None` for some color.
-   That color loses. Set `board.winner` to the opponent.
-2. **No legal moves:** The side to move has zero legal moves (after filtering
-   illegal self-explosion captures). The side to move loses (simplified rule
-   for MVP -- standard atomic chess treats this as stalemate/draw in some
-   rulesets, but loss simplifies implementation and produces more decisive
-   games for analysis).
-3. **Move cap:** `board.move_count >= max_moves`. Result is a draw
-   (`winner = None`).
+```python
+def generate_antichess_moves(board: Board) -> list[Move]:
+    all_moves = generate_moves(board)
+    captures = [m for m in all_moves if board.get_piece(m.end) is not None]
+    return captures if captures else all_moves
+```
 
-### 4.5 Check Handling (MVP Simplification)
+If any capture is available, the player MUST capture. This is the defining
+rule of Antichess and is trivial to implement.
 
-The MVP does **not** enforce the obligation to escape check. A player whose
-king is in check may play any legal move, including one that ignores the check.
-This simplification may produce some unrealistic positions but does not break
-the system because:
+**Terminal conditions:**
+- No pieces remaining -- that player **WINS** (they lost all pieces).
+- No legal moves -- that player **WINS** (they are blocked).
+- Move cap -- draw.
 
-- The self-preservation rule (4.3) prevents the worst illegal states.
-- If a king remains in check, the opponent can capture/explode it next move.
+### 4.7 Variant-Specific Feature Behavior
+
+The four core features work identically across all variants:
+`material`, `mobility`, `enemy_king_danger`, `own_king_safety`.
+
+The `capture_threats` feature is variant-aware:
+
+| Variant   | capture_threats Computation                                     |
+|-----------|-----------------------------------------------------------------|
+| Standard  | Sum of capturable piece values                                  |
+| Atomic    | Capturable values + 3x adjacent explosions + 100x king explosion|
+| Antichess | Value of own pieces that opponent can capture (inverted logic)   |
+
+The feature signature remains `(board, color) -> float` but the function
+internally checks the variant. See Section 8 (Area 2) for implementation
+details.
+
+### 4.8 Check Handling (MVP Simplification)
+
+The MVP does **not** enforce the obligation to escape check in any variant.
+A player whose king is in check may play any legal move, including one that
+ignores the check. This simplification may produce some unrealistic positions
+but does not break the system because:
+
+- For Atomic: the self-preservation rule (4.5) prevents the worst illegal
+  states.
+- If a king remains in check, the opponent can capture it next move (all
+  variants).
 - The evaluation features (king_danger, king_safety) will still correctly
   assess dangerous positions, so engines with those features will naturally
   avoid leaving their king in danger.
+- For Antichess: the king has no special status, so check is irrelevant.
 
 ---
 
@@ -353,8 +463,10 @@ engine-lab/
 |
 |-- variants/                        # Area 1
 |   |-- __init__.py
-|   |-- base.py                      # Base variant interface
-|   `-- atomic.py                    # Atomic Chess rules
+|   |-- base.py                      # Variant dispatch + shared helpers
+|   |-- standard.py                  # Standard Chess (king capture)
+|   |-- atomic.py                    # Atomic Chess (explosions)
+|   `-- antichess.py                 # Antichess / Losing Chess (optional)
 |
 |-- features/                        # Area 2
 |   |-- __init__.py
@@ -509,7 +621,37 @@ Notes:
   by row 0-7, col 0-7. For each piece, produce destination squares in a
   consistent order. This is required for alpha-beta reproducibility.
 
-### 7.5 Atomic Variant
+### 7.5 Variant Dispatch
+
+```python
+# variants/base.py
+
+VARIANT_DISPATCH: dict[str, dict[str, Callable]]
+# Maps variant name -> {"apply_move": fn, "generate_legal_moves": fn}
+
+def get_apply_move(variant: str) -> Callable[[Board, Move], Board]: ...
+def get_generate_legal_moves(variant: str) -> Callable[[Board], list[Move]]: ...
+def get_supported_variants() -> list[str]: ...
+```
+
+### 7.6 Standard Chess Variant
+
+```python
+# variants/standard.py
+
+def apply_standard_move(board: Board, move: Move) -> Board:
+    """Apply a move under standard chess rules. Returns a new Board (does not
+    mutate the input). Handles captures and pawn promotion. Sets board.winner
+    if a king is captured."""
+    ...
+
+def generate_standard_moves(board: Board) -> list[Move]:
+    """Generate legal moves under standard chess rules. For the MVP this is
+    identical to generate_moves() (no check filtering)."""
+    ...
+```
+
+### 7.7 Atomic Chess Variant
 
 ```python
 # variants/atomic.py
@@ -517,7 +659,7 @@ Notes:
 def apply_atomic_move(board: Board, move: Move) -> Board:
     """Apply a move under Atomic Chess rules. Returns a new Board (does not
     mutate the input). Handles explosion on captures. Sets board.winner if
-    a king is destroyed. Filters or rejects self-destructive captures."""
+    a king is destroyed."""
     ...
 
 def generate_atomic_moves(board: Board) -> list[Move]:
@@ -527,7 +669,23 @@ def generate_atomic_moves(board: Board) -> list[Move]:
     ...
 ```
 
-### 7.6 Features
+### 7.8 Antichess Variant (Optional)
+
+```python
+# variants/antichess.py
+
+def apply_antichess_move(board: Board, move: Move) -> Board:
+    """Apply a move under Antichess rules. Same as standard move application.
+    Sets board.winner if a player has no pieces left (that player wins)."""
+    ...
+
+def generate_antichess_moves(board: Board) -> list[Move]:
+    """Generate legal moves under Antichess rules. If any captures exist,
+    return only captures (forced capture rule). Otherwise return all moves."""
+    ...
+```
+
+### 7.9 Features
 
 ```python
 # features/registry.py
@@ -552,7 +710,7 @@ def feature_name(board: Board, color: str) -> float:
     ...
 ```
 
-### 7.7 Feature-Subset Agent
+### 7.10 Feature-Subset Agent
 
 ```python
 # agents/feature_subset_agent.py
@@ -565,7 +723,7 @@ class FeatureSubsetAgent:
     weights: dict[str, float]      # e.g. {"material": 0.5, "mobility": 0.5}
 ```
 
-### 7.8 Agent Generation
+### 7.11 Agent Generation
 
 ```python
 # agents/generate_agents.py
@@ -579,7 +737,7 @@ def generate_feature_subset_agents(
     ...
 ```
 
-### 7.9 Evaluation
+### 7.12 Evaluation
 
 ```python
 # agents/evaluation.py
@@ -608,7 +766,7 @@ def normalize_feature_value(x: float) -> float:
     return clipped / 10.0
 ```
 
-### 7.10 Alpha-Beta Engine
+### 7.13 Alpha-Beta Engine
 
 ```python
 # search/alpha_beta.py
@@ -634,7 +792,7 @@ Implementation requirements:
 - Move ordering: captures first (improves pruning)
 - Must always return a legal move if one exists
 
-### 7.11 Game Result
+### 7.14 Game Result
 
 ```python
 # simulation/game.py
@@ -653,7 +811,7 @@ class GameResult:
     black_avg_time: float      # Average seconds per black move
 ```
 
-### 7.12 Game Simulation
+### 7.15 Game Simulation
 
 ```python
 # simulation/game.py
@@ -668,7 +826,7 @@ def play_game(
 ) -> GameResult: ...
 ```
 
-### 7.13 Round-Robin Tournament
+### 7.16 Round-Robin Tournament
 
 ```python
 # tournament/round_robin.py
@@ -685,7 +843,7 @@ def run_round_robin(
     ...
 ```
 
-### 7.14 Leaderboard
+### 7.17 Leaderboard
 
 ```python
 # tournament/leaderboard.py
@@ -710,7 +868,7 @@ def compute_leaderboard(
     ...
 ```
 
-### 7.15 Result I/O
+### 7.18 Result I/O
 
 ```python
 # tournament/results_io.py
@@ -720,7 +878,7 @@ def load_results_json(path: str) -> list[GameResult]: ...
 def save_results_csv(results: list[GameResult], path: str) -> None: ...
 ```
 
-### 7.16 Analysis
+### 7.19 Analysis
 
 ```python
 # analysis/feature_marginals.py
@@ -768,7 +926,7 @@ This is the standard two-way interaction term from factorial ANOVA (see
 References). Positive synergy means the features are more valuable together
 than their individual contributions would predict.
 
-### 7.17 Reporting
+### 7.20 Reporting
 
 ```python
 # analysis/interpretation.py
@@ -804,12 +962,14 @@ def generate_markdown_report(
 
 ## 8. Development Area Specifications
 
-### Area 1: Core Chess State + Atomic Variant Rules
+### Area 1: Core Chess State + Variant Rules
 
 **Owner:** Developer 1
 
 **Goal:** Build the board representation, move representation, pseudo-legal
-move generation, and Atomic Chess rule application.
+move generation, standard chess variant, variant dispatch, and Atomic Chess
+rule application. **Build standard chess first** (Phase 1), then add Atomic
+(Phase 2), then optionally Antichess (Phase 3).
 
 **Files owned:**
 
@@ -822,11 +982,15 @@ core/move_generation.py
 core/apply_move.py
 core/__init__.py
 variants/base.py
+variants/standard.py
 variants/atomic.py
+variants/antichess.py          # optional Phase 3
 variants/__init__.py
 tests/test_board.py
 tests/test_move_generation.py
+tests/test_standard.py
 tests/test_atomic.py
+tests/test_antichess.py        # optional Phase 3
 ```
 
 **Must not edit:** `features/`, `agents/`, `search/`, `tournament/`,
@@ -880,13 +1044,30 @@ tests/test_atomic.py
 
 #### Checkpoints
 
+**Phase 1 (Standard Chess -- build first):**
+
 | ID  | Criterion                                                        |
 |-----|------------------------------------------------------------------|
 | 1A  | `pytest tests/test_board.py` passes                              |
 | 1B  | Starting position generates exactly 20 white pseudo-legal moves  |
-| 1C  | Atomic explosion tests pass (pieces removed, pawns survive)      |
-| 1D  | Self-preservation: captures that would explode own king filtered |
-| 1E  | 100 random plies can be applied without crash                    |
+| 1C  | Standard move application works (captures, promotion)            |
+| 1D  | 100 random standard chess plies without crash                    |
+| 1E  | Variant dispatch resolves `"standard"` correctly                 |
+
+**Phase 2 (Atomic Chess):**
+
+| ID  | Criterion                                                        |
+|-----|------------------------------------------------------------------|
+| 1F  | Atomic explosion tests pass (pieces removed, pawns survive)      |
+| 1G  | Self-preservation: captures that would explode own king filtered |
+| 1H  | 100 random atomic plies without crash                            |
+
+**Phase 3 (Antichess -- optional):**
+
+| ID  | Criterion                                                        |
+|-----|------------------------------------------------------------------|
+| 1I  | Forced capture rule works (only captures returned when available)|
+| 1J  | Win condition: player with no pieces left wins                   |
 
 ---
 
@@ -1160,8 +1341,9 @@ tests/test_tournament.py
 class RandomAgent:
     name: str = "RandomAgent"
 
-    def choose_move(self, board: Board) -> Move:
-        moves = generate_atomic_moves(board)
+    def choose_move(self, board: Board, variant: str = "standard") -> Move:
+        generate_legal = get_generate_legal_moves(variant)
+        moves = generate_legal(board)
         return random.choice(moves)
 ```
 
@@ -1172,8 +1354,9 @@ class RandomAgent:
 - For `FeatureSubsetAgent`: create `AlphaBetaEngine(agent, depth)` and call
   `engine.choose_move(board)`.
 - For `RandomAgent`: call `agent.choose_move(board)`.
-- Apply moves with `apply_atomic_move(board, move)`.
-- Terminate on: king explosion, no legal moves, or move cap.
+- Apply moves with `get_apply_move(variant)(board, move)`.
+- Terminate on: winner set (king captured/exploded/no pieces), no legal
+  moves, or move cap.
 - Track per-side average nodes searched and average time per move.
 - Use the `seed` parameter to seed `random` for reproducibility.
 
@@ -1185,6 +1368,21 @@ class RandomAgent:
 - Display progress with `tqdm`.
 - **Seed propagation:** Generate per-game seeds deterministically from the
   tournament seed, e.g., `game_seed = tournament_seed + game_index`.
+- **Optional multiprocessing:** Each game is a pure function with no shared
+  state, making tournament execution embarrassingly parallel:
+  ```python
+  from multiprocessing import Pool
+
+  def run_single_game(args):
+      white, black, variant, depth, max_moves, seed = args
+      return play_game(white, black, variant, depth, max_moves, seed)
+
+  with Pool(workers) as pool:
+      results = list(tqdm(pool.imap(run_single_game, game_args), total=n))
+  ```
+  With 4 workers, a 930-game tournament runs roughly 4x faster. Add a
+  `--workers` CLI flag to control this. Default to 1 (sequential) for
+  determinism debugging, then scale up for production runs.
 
 **Result I/O (`tournament/results_io.py`):**
 
@@ -1530,13 +1728,17 @@ a deterministic input list).
 
 ## 13. MVP Acceptance Criteria
 
-The project is complete when the following command:
+The project is complete when the following commands both succeed:
 
 ```bash
+# Phase 1: Standard chess (must work first)
+python main.py full-pipeline --variant standard --depth 2 --max-moves 80
+
+# Phase 2: Atomic chess
 python main.py full-pipeline --variant atomic --depth 2 --max-moves 80
 ```
 
-produces **all** of the following:
+Each pipeline run produces **all** of the following:
 
 1. **31 generated feature-subset agents** (one per nonempty subset of 5 features)
 2. **930 tournament game results** (31 * 30 ordered pairs)
@@ -1545,8 +1747,11 @@ produces **all** of the following:
 5. **Feature marginal contribution table** (5 rows)
 6. **Pairwise synergy table** (10 pairs)
 7. **Natural-language interpretation** paragraph
-8. **Markdown report** saved to `outputs/reports/atomic_strategy_report.md`
+8. **Markdown report** saved to `outputs/reports/{variant}_strategy_report.md`
 9. **All tests pass:** `pytest` exits with code 0
+10. **Cross-variant comparison:** Running both variants shows different
+    feature rankings (material dominant in standard, king_danger dominant
+    in atomic). This contrast IS the core deliverable.
 
 ### Expected Terminal Output Structure
 
