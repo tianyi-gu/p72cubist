@@ -13,10 +13,11 @@
 9. [Parallel Development Workflow](#9-parallel-development-workflow)
 10. [Integration & Merge Plan](#10-integration--merge-plan)
 11. [Performance Budget](#11-performance-budget)
-12. [MVP Acceptance Criteria](#12-mvp-acceptance-criteria)
-13. [Hackathon Execution Strategy](#13-hackathon-execution-strategy)
-14. [Known Limitations & Future Work](#14-known-limitations--future-work)
-15. [References](#15-references)
+12. [Determinism Requirements](#12-determinism-requirements)
+13. [MVP Acceptance Criteria](#13-mvp-acceptance-criteria)
+14. [Hackathon Execution Strategy](#14-hackathon-execution-strategy)
+15. [Known Limitations & Future Work](#15-known-limitations--future-work)
+16. [References](#16-references)
 
 ---
 
@@ -500,9 +501,13 @@ def generate_moves_for_color(board: Board, color: str) -> list[Move]:
     ...
 ```
 
-Note: These produce pseudo-legal moves. For Atomic Chess, the variant layer
-must filter out captures that would explode the moving side's own king (see
-Section 4.3).
+Notes:
+- These produce pseudo-legal moves. For Atomic Chess, the variant layer
+  must filter out captures that would explode the moving side's own king
+  (see Section 4.3).
+- **Move ordering must be deterministic** (see Section 12). Iterate pieces
+  by row 0-7, col 0-7. For each piece, produce destination squares in a
+  consistent order. This is required for alpha-beta reproducibility.
 
 ### 7.5 Atomic Variant
 
@@ -1260,7 +1265,7 @@ synergy(a, b)     = avg_with_both - avg_with_a_only - avg_with_b_only + overall_
 ```
 
 This is the standard two-way interaction term from factorial experimental
-design (see References, Section 15).
+design (see References, Section 16).
 
 **Interpretation (`analysis/interpretation.py`):**
 
@@ -1466,7 +1471,64 @@ post-MVP, sampling strategies would be needed.
 
 ---
 
-## 12. MVP Acceptance Criteria
+## 12. Determinism Requirements
+
+EngineLab must be fully deterministic: given the same inputs, it must produce
+the same outputs every time. This is a hard requirement, not a nice-to-have.
+
+### Why Determinism Matters
+
+- **Reproducibility:** Results must be independently verifiable. If a reviewer
+  runs the same pipeline, they must get identical results.
+- **Debugging:** Non-deterministic bugs are the hardest to diagnose. During a
+  hackathon, there is no time for flaky behavior.
+- **Credibility:** A system that produces different "strategic insights" on
+  each run undermines trust in the analysis.
+
+### Determinism Contract
+
+Given identical values for `variant`, `feature_names`, `depth`, `max_moves`,
+and `seed`, the system MUST produce identical:
+
+1. Agent list (same names, features, weights, same ordering)
+2. Game results (same moves played, same outcomes)
+3. Leaderboard (same rankings, same scores)
+4. Analysis (same marginals, same synergies)
+5. Report (same content)
+
+### Implementation Requirements
+
+**Move generation order must be deterministic.** This is the most subtle
+requirement. Alpha-beta search with pruning produces different results if
+moves are explored in different orders. Move generation must iterate pieces
+in a fixed order (row 0-7, col 0-7) and for each piece produce destination
+moves in a fixed order (e.g., row 0-7, col 0-7). The exact ordering does
+not matter as long as it is consistent across runs.
+
+**Random agent uses seeded RNG.** The `play_game` function receives a `seed`
+parameter. Use `random.Random(seed)` to create a local RNG instance (do NOT
+call `random.seed()` on the global RNG, as that creates hidden coupling
+between games). Pass this local RNG to the `RandomAgent`.
+
+**Tournament seed propagation.** The round-robin `seed` parameter produces
+per-game seeds via `game_seed = tournament_seed + game_index`. Game ordering
+must also be deterministic (iterate white agents in list order, then black
+agents in list order).
+
+**No floating-point non-determinism.** Avoid operations whose results depend
+on execution order (e.g., summing a set of floats). Always iterate in
+deterministic order (sorted lists, not sets or dict iteration on pre-3.7
+Python). Python 3.7+ guarantees dict insertion order, so this is safe for
+dicts created in deterministic order.
+
+**Agent name generation is deterministic.** Features in the name are sorted
+alphabetically. The power-set generation must also produce subsets in a
+deterministic order (e.g., `itertools.combinations` is deterministic given
+a deterministic input list).
+
+---
+
+## 13. MVP Acceptance Criteria
 
 The project is complete when the following command:
 
@@ -1527,7 +1589,7 @@ Report saved: outputs/reports/atomic_strategy_report.md
 
 ---
 
-## 13. Hackathon Execution Strategy
+## 14. Hackathon Execution Strategy
 
 ### Hour-by-Hour Plan (for a ~12-hour hackathon)
 
@@ -1562,7 +1624,7 @@ Report saved: outputs/reports/atomic_strategy_report.md
 
 ---
 
-## 14. Known Limitations & Future Work
+## 15. Known Limitations & Future Work
 
 ### MVP Limitations
 
@@ -1595,7 +1657,7 @@ Report saved: outputs/reports/atomic_strategy_report.md
 
 ---
 
-## 15. References
+## 16. References
 
 1. **Shannon, C. E.** (1950). "Programming a Computer for Playing Chess."
    *Philosophical Magazine*, 41(314). -- Foundation for evaluation-function

@@ -51,3 +51,11 @@ Five development areas, each with dedicated files:
 - **No castling, en passant, or underpromotion** in MVP.
 - **Self-preservation rule is REQUIRED:** Filter out captures that would explode own king.
 - Read `Instructions.MD` for the full PRD. Read `docs/interfaces.md` for exact signatures.
+- Read `docs/harness_engineering.md` for agent operation best practices and validation protocol.
+
+## Determinism
+
+All output must be deterministic given the same seed. Move generation must iterate
+pieces in fixed order (row 0-7, col 0-7). Use `random.Random(seed)` (local instance),
+never `random.seed()` on the global RNG. Run the pipeline twice with the same seed
+and diff the outputs to verify.

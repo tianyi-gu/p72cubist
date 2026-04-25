@@ -26,6 +26,7 @@ python main.py full-pipeline --variant atomic --depth 2 --max-moves 80
 - [docs/interfaces.md](docs/interfaces.md) -- Shared interface specification
 - [docs/development_workflow.md](docs/development_workflow.md) -- Parallel development process
 - [docs/agent_definitions.md](docs/agent_definitions.md) -- Per-developer scope and prompts
+- [docs/harness_engineering.md](docs/harness_engineering.md) -- AI agent operation best practices
 
 ## Project Structure
 
