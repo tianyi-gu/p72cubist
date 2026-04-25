@@ -1,329 +1,356 @@
 # EngineLab
 
-Interpretable strategy-discovery system for chess variants via exhaustive feature-subset testing with alpha-beta search engines.
+EngineLab is a Python chess-variant experimentation framework for testing which evaluation features perform well under different rule sets. It generates feature-subset agents, runs them through round-robin self-play tournaments, ranks the agents, analyzes marginal feature contribution and pairwise feature synergy, and exposes the same workflow through a CLI, Streamlit UI, and FastAPI endpoint.
 
-Given a chess variant and a set of evaluation features, EngineLab creates one alpha-beta engine per feature subset, runs a full round-robin tournament, and analyzes which strategic concepts -- alone and in combination -- produce winning play. The system includes a CLI pipeline, an interactive Streamlit UI, and automated chart/report generation.
+This repository is not a neural-network chess engine, not a Stockfish wrapper, and not an Elo-calibrated playing engine. The core idea is controlled feature discovery: build many lightweight agents from different combinations of handcrafted evaluation features, let them play under variant-specific rules, then inspect which features or feature pairs correlate with stronger tournament performance.
 
-## How It Works
+## What the system does
 
-1. **Define features** -- 12 evaluation features capture different strategic concepts (material, mobility, king safety, etc.)
-2. **Generate agents** -- Each agent uses a unique subset of features with equal weights. Default: 100 agents via stratified sampling (all 12 singletons + all 66 pairs + the full set + random larger subsets). For 5 or fewer features, all 2^n - 1 subsets are generated exhaustively.
-3. **Run tournament** -- Full round-robin where every ordered pair plays one game (agent A as white vs B, and B as white vs A). With 100 agents, that's 9,900 games.
-4. **Analyze results** -- Feature marginal contributions (average score with vs. without each feature), pairwise synergy (do two features perform better together than their individual contributions predict?), and top-k frequency analysis.
-5. **Generate outputs** -- Markdown strategy report, 16 PNG charts with HTML dashboard, and exportable CSV data.
+At a high level, the project has five layers:
 
-## Key Findings
+1. **Chess state and rules engine**: internal board representation, move model, FEN conversion, move generation, legal move filtering, move application, castling, en passant, promotion, check detection, and variant dispatch.
+2. **Evaluation features**: handcrafted scoring functions such as material, mobility, king safety, center control, pawn structure, capture threats, and variant-targeted features such as negative material and king proximity.
+3. **Agents and search**: feature-subset agents use equal-weighted feature combinations and select moves through a depth-limited alpha-beta negamax engine.
+4. **Tournament and analysis pipeline**: round-robin self-play, leaderboard scoring, feature marginal analysis, pairwise synergy analysis, JSON/CSV export, and Markdown report generation.
+5. **Interfaces**: Typer CLI, Streamlit dashboard, FastAPI server with Server-Sent Events, and a browser-based drag-and-drop chess board component.
 
-### Atomic Chess (depth 3, 13 agents, 156 games)
+## Repository layout
 
-**Champion: `capture_threats + enemy_king_danger` (87.5% score rate, undefeated)**
+```text
+.
+├── agents/                 # Feature-subset agent model, generation, and evaluation wrapper
+├── analysis/               # Feature marginal and pairwise synergy analysis
+├── api/                    # FastAPI server for feature/variant discovery and streamed tournaments
+├── core/                   # Board, move, coordinate, move generation, and move application logic
+├── docs/                   # Design notes, interfaces, UI specs, and workflow documentation
+├── features/               # Registered handcrafted evaluation features
+├── reports/                # Markdown report generator
+├── scripts/                # Precomputation and robustness scripts
+├── search/                 # Alpha-beta negamax search engine
+├── simulation/             # Game loop and random-agent support
+├── tests/                  # Unit and integration-style test suite
+├── tournament/             # Round-robin execution, leaderboard computation, result I/O
+├── ui/                     # Streamlit application and chess board rendering/play support
+├── variants/               # Standard chess and supported variant rule implementations
+├── export_data.py          # Converts tournament JSON into analysis CSV/JSON artifacts
+├── main.py                 # CLI entry point
+├── requirements.txt        # Python dependencies
+└── run_local.sh            # Convenience launcher for local UI/API workflows
+```
 
-At depth 3, the combination of capture awareness and enemy king proximity dominance produced a dominant engine. This aligns with atomic chess theory: captures trigger explosions that destroy adjacent pieces, so controlling which captures happen (and threatening the enemy king via adjacent explosions) is the core strategic axis.
+## Core architecture
 
-### Atomic Chess (depth 2, 30 agents, 870 games)
+### Board model
 
-**Champion: `bishop_pair + mobility` (81.9% score rate)**
+The internal board is defined in `core/board.py`. It stores:
 
-At depth 2, mobility (move count advantage) paired with the bishop pair bonus emerged as the strongest combination. This shifted at depth 3 as deeper search exposed the importance of tactical capture-based play over positional mobility.
+- `grid`: 8x8 piece array using uppercase pieces for White and lowercase pieces for Black.
+- `side_to_move`: `w` or `b`.
+- `winner`: `w`, `b`, `draw`, or `None`.
+- `move_count`: total plies played.
+- `castling_rights`: `K`, `Q`, `k`, `q` flags.
+- `en_passant_square`: target square for en passant when available.
+- `check_count`: per-side check counters for Three-Check.
 
-## Quick Start
+The coordinate system is internal and consistent across the engine: row `0` is rank 1, row `7` is rank 8, column `0` is file `a`, and column `7` is file `h`.
+
+### Move model
+
+`core/move.py` defines a frozen `Move` dataclass:
+
+```python
+Move(start=(row, col), end=(row, col), promotion=None)
+```
+
+Moves can be serialized to UCI through `to_uci()`, including promotion moves such as `a7a8q`.
+
+### Move generation and legality
+
+`core/move_generation.py` contains the standard chess move generator. It includes:
+
+- pawn pushes, double pushes, captures, promotion, and en passant;
+- knight, bishop, rook, queen, and king move generation;
+- castling generation with checks for occupied path squares, current check, through-check, and destination check;
+- attack detection through `_is_square_attacked_raw()`;
+- `generate_moves()` for pseudo-legal moves;
+- `generate_legal_moves()` for check-filtered legal moves.
+
+`core/apply_move.py` applies standard moves immutably by copying the board first. It handles normal movement, captures, castling rook movement, en passant capture removal, promotion, castling-right updates, en passant-square updates, side-to-move toggling, and move-count incrementing. Checkmate and stalemate are handled by the game loop, not by `apply_move()`.
+
+## Supported variants
+
+Variant behavior is routed through `variants/base.py`, which maps each variant name to its own move-application function and legal-move generator.
+
+| Variant key | Implementation | Actual behavior in this repo |
+|---|---|---|
+| `standard` | `variants/standard.py` | Standard chess move application and legal move generation. |
+| `atomic` | `variants/atomic.py` | Captures trigger explosions. Capturing piece, captured piece, and adjacent non-pawn pieces are removed. If a king is destroyed, the other side wins. Captures that explode the moving side's own king are filtered out. |
+| `antichess` | `variants/antichess.py` | Captures are forced when available. Check is ignored. A side wins by losing all its pieces. |
+| `kingofthehill` | `variants/king_of_the_hill.py` | Standard rules plus immediate win when a king reaches d4, e4, d5, or e5. |
+| `threecheck` | `variants/three_check.py` | Standard rules plus immediate win when a side gives its third check. Check counts are stored on the board. |
+| `chess960` | `variants/chess960.py` | Deterministic seeded Fischer-random starting position. Bishops are placed on opposite colors and the king is placed between rooks. Castling is intentionally disabled in this implementation. |
+| `horde` | `variants/horde.py` | White starts with 36 pawns and no king. Black starts normally. Black wins by removing all White pieces. White uses pseudo-legal move generation because it has no king. |
+
+There is also infrastructure for custom generated variants in `variants/llm_generate.py` and `variants/dynamic_loader.py`. That path expects generated Python functions matching the project interfaces. The default generator calls the OpenAI API through `OPENAI_API_KEY`; without that environment variable, generation returns an error instead of silently pretending to work.
+
+## Evaluation features
+
+All features are registered in `features/registry.py`. The current registry contains 12 feature functions:
+
+| Feature | Purpose |
+|---|---|
+| `material` | Own material minus opponent material using standard piece values. |
+| `negative_material` | Opponent material minus own material; useful for antichess-style objectives. |
+| `piece_position` | Piece-square-table positional score. |
+| `center_control` | Rewards occupying or attacking d4, e4, d5, and e5. |
+| `king_safety` | Scores adjacent pawns, open-file exposure, and nearby enemy pieces. |
+| `enemy_king_danger` | Scores proximity and pressure around the opponent king. |
+| `king_proximity` | Counts own non-pawns adjacent to the enemy king minus opponent non-pawns adjacent to own king. |
+| `mobility` | Own pseudo-legal move count minus opponent pseudo-legal move count. |
+| `pawn_structure` | Penalizes doubled and isolated pawns; rewards passed and connected pawns. |
+| `bishop_pair` | Adds a bishop-pair bonus relative to the opponent. |
+| `rook_activity` | Rewards open files, semi-open files, and rook activity on the seventh rank. |
+| `capture_threats` | Sums the material value of currently capturable enemy pieces. |
+
+`agents/evaluation.py` evaluates a board by normalizing each raw feature value into `[-1, 1]`, multiplying by the agent's feature weight, and summing the result. Terminal boards return fixed win/loss/draw scores.
+
+## Agent generation
+
+`agents/generate_agents.py` creates feature-subset agents from the feature registry.
+
+- If the full nonempty power set fits inside `max_agents`, it generates every nonempty subset.
+- Otherwise, it uses stratified sampling: all single-feature agents, all pair-feature agents, the full-feature agent, then random larger subsets until `max_agents` is reached.
+- Every generated agent uses equal weights across its selected features.
+- Agent names are deterministic and follow `Agent_feature_a__feature_b`.
+
+The agent object itself is defined in `agents/feature_subset_agent.py` and stores `name`, `features`, and `weights`.
+
+## Search engine
+
+`search/alpha_beta.py` implements a variant-aware depth-limited negamax search with alpha-beta pruning.
+
+Important details:
+
+- The engine obtains move generation and move application from `variants/base.py`, so search follows the selected variant's rules.
+- Captures are ordered before quiet moves, sorted by captured-piece value.
+- The engine tracks `nodes_searched` and `search_time_seconds` for each selected move.
+- Evaluation is delegated to the selected feature-subset agent.
+
+This is a simple research/search engine, not a production chess engine. It does not implement transposition tables, iterative deepening, quiescence search, opening books, time management, or NN evaluation.
+
+## Game simulation and tournament pipeline
+
+`simulation/game.py` owns the game loop. It creates the starting board for the selected variant, alternates between White and Black, requests legal moves, asks either `AlphaBetaEngine` or `RandomAgent` to select a move, applies the variant-specific move, and returns a `GameResult` dataclass.
+
+A `GameResult` records:
+
+- White and Black agent names;
+- winner or draw;
+- number of plies;
+- termination reason;
+- average searched nodes and time for each side;
+- UCI move list.
+
+`tournament/round_robin.py` runs every ordered pair of agents once, so `N` agents produce `N * (N - 1)` games. It supports serial execution by default and process-pool parallel execution through the `workers` argument.
+
+`tournament/leaderboard.py` scores agents with:
+
+```text
+win = 1.0, draw = 0.5, loss = 0.0
+score_rate = (wins + 0.5 * draws) / games_played
+```
+
+`analysis/feature_marginals.py` computes how much better agents with a feature perform compared with agents without it. `analysis/synergy.py` computes pairwise feature interaction using an ANOVA-style two-way interaction term:
+
+```text
+synergy(a, b) = avg_with_both - avg_with_a - avg_with_b + overall_avg
+```
+
+`reports/markdown_report.py` converts leaderboard, marginal, and synergy results into a Markdown strategy report.
+
+`export_data.py` converts tournament JSON into CSV/JSON artifacts for dashboards and external inspection, including games, leaderboard, agents, feature marginals, synergies, matchup matrices, head-to-head summaries, termination breakdowns, game-length distributions, feature-count performance, feature-presence impact, and summary metadata.
+
+## Interfaces
+
+### CLI
+
+The CLI is defined in `main.py` with Typer. Available commands are:
 
 ```bash
-# Setup
-python -m venv .venv && source .venv/bin/activate
+python main.py random-game
+python main.py match
+python main.py tournament
+python main.py analyze
+python main.py full-pipeline
+python main.py play
+```
+
+Examples:
+
+```bash
+python main.py random-game --variant standard --max-moves 80 --seed 42
+```
+
+```bash
+python main.py match \
+  --white material,mobility \
+  --black king_safety,center_control \
+  --variant atomic \
+  --depth 2 \
+  --max-moves 80
+```
+
+```bash
+python main.py tournament \
+  --variant atomic \
+  --depth 2 \
+  --max-moves 80 \
+  --max-agents 30 \
+  --output outputs/data/tournament_results_atomic.json
+```
+
+```bash
+python main.py full-pipeline \
+  --variant standard \
+  --depth 2 \
+  --max-moves 80 \
+  --max-agents 30 \
+  --top-k 10
+```
+
+```bash
+python main.py play --variant atomic --depth 3 --color w
+```
+
+### Streamlit UI
+
+The main Streamlit app is `ui/app.py`. It provides:
+
+- a home/overview page;
+- variant selection;
+- feature selection;
+- live tournament execution;
+- leaderboard, marginal, synergy, matchup, and chart panels;
+- sample-game visualization;
+- play-against-engine mode;
+- optional custom-variant generation and dynamic loading flow.
+
+The board UI is split across:
+
+- `ui/board.py`: FEN-to-SVG board rendering helpers using `python-chess`;
+- `ui/chess_viewer.py`: replay and drag-and-drop board components;
+- `ui/play_engine.py`: UI-facing move legality, move application, engine reply, and game-status helpers;
+- `ui/components/chess_dnd/index.html`: embedded browser chess board with drag/drop, legal-move highlighting, promotion UI, and explosion-square highlighting.
+
+Run the UI with:
+
+```bash
+streamlit run ui/app.py
+```
+
+### FastAPI server
+
+`api/server.py` exposes:
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/health` | GET | Health check. |
+| `/api/features` | GET | Registered feature metadata. |
+| `/api/variants` | GET | Supported variant names. |
+| `/api/tournament` | POST | Runs a tournament and streams progress/completion through Server-Sent Events. |
+
+Run the API with:
+
+```bash
+uvicorn api.server:app --reload --port 8000
+```
+
+## Installation
+
+Use Python 3.11+ or a recent Python 3 version with support for modern type syntax.
+
+```bash
+python -m venv venv
+source venv/bin/activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-
-# Run the full pipeline (atomic chess, depth 2)
-python main.py full-pipeline --variant atomic --depth 2 --max-moves 80
-
-# Run tournament only
-python main.py tournament --variant atomic --depth 2
-
-# Play against the engine interactively (CLI)
-python main.py play --variant atomic --depth 3 --features capture_threats,enemy_king_danger
-
-# Launch the Streamlit UI
-streamlit run ui/app.py --server.port 8502
-
-# Generate charts (after running export_data.py)
-python export_data.py
-python generate_charts.py atomic
 ```
 
-## CLI Commands
+The project uses local Python modules directly from the repository root. Run commands from the root directory so imports such as `from core.board import Board` resolve correctly.
 
-Built with Typer. Run `python main.py --help` for full usage.
+## Common workflows
 
-| Command | Description |
-|---------|-------------|
-| `full-pipeline` | End-to-end: generate agents, run tournament, analyze, generate report |
-| `tournament` | Run round-robin tournament only, save results JSON |
-| `analyze` | Analyze existing results JSON (marginals, synergy, interpretation) |
-| `match` | Single game between two feature-set agents |
-| `random-game` | Random-vs-random game (for testing) |
-| `play` | Interactive human-vs-engine mode in the terminal (UCI input) |
-
-### Common Options
-
-- `--variant`: `standard`, `atomic`, or `antichess` (default: `standard`)
-- `--depth`: Search depth for alpha-beta (default: `2`)
-- `--max-moves`: Maximum plies before draw (default: `80`)
-- `--seed`: RNG seed for determinism (default: `42`)
-- `--max-agents`: Cap on agent count for stratified sampling (default: `100`)
-
-## Streamlit UI
-
-The web interface provides a complete visual experience for running tournaments and exploring results.
+### Run a complete experiment
 
 ```bash
-streamlit run ui/app.py --server.port 8502
+python main.py full-pipeline \
+  --variant atomic \
+  --depth 2 \
+  --max-moves 80 \
+  --seed 42 \
+  --max-agents 30 \
+  --top-k 10
 ```
 
-### Views
+This will:
 
-- **Home** -- Animated landing page with project overview.
-- **Build** -- Configure a new tournament (variant, features, depth) or load existing results from `outputs/data/`.
-- **Live** -- Real-time tournament progress with progress bar, game count, and time estimates. Tournament runs in a background thread.
-- **Analysis** -- Five tabs of results:
-  - **Best Engine**: Winning agent details, score rate, W/D/L, feature pills, runners-up, and "Play Against Best Engine" button.
-  - **Features**: Marginal contribution bar chart + top-10 feature frequency chart (Plotly).
-  - **Synergy**: Top synergy/redundancy pairs + full pairwise heatmap (Plotly).
-  - **Stats**: Score distribution, game length histogram, W/D/L stacked bars, termination pie chart, feature count vs. performance scatter (Plotly).
-  - **Leaderboard**: Sortable table of top 20 agents + download buttons for report and results.
-- **Play** -- Interactive play against the tournament's best engine. Click-to-move chessboard (chessboard.js), legal move highlighting, last-move highlighting, atomic explosion highlighting, promotion modal. All game logic runs server-side using real variant dispatch (same engine as CLI/tournaments). Engine replies come from AlphaBetaEngine with the champion's feature weights.
+1. load registered features;
+2. generate feature-subset agents;
+3. run a round-robin tournament;
+4. compute the leaderboard;
+5. compute feature marginals;
+6. compute pairwise synergies;
+7. save tournament JSON under `outputs/data/`;
+8. write a Markdown report under `outputs/reports/`.
 
-### Play Mode Details
+### Export visualization data
 
-Moves are validated and applied server-side using the same variant-aware engine that powers tournaments:
-
-- `get_legal_moves_uci()` -- generates legal moves via variant dispatch
-- `apply_move_for_ui()` -- applies moves with real explosion/forced-capture logic
-- `engine_reply()` -- uses `AlphaBetaEngine` with the tournament champion's features
-- `game_status_variant()` -- detects checkmate, stalemate, and variant-specific terminal states (king explosion, piece depletion)
-
-## Evaluation Features
-
-All 12 features compute a differential score (positive = good for the side to move):
-
-| Feature | Description |
-|---------|-------------|
-| `material` | Piece value sum (P=1, N=3, B=3, R=5, Q=9). Own minus opponent. |
-| `piece_position` | Piece-square table bonuses. Rewards centralized knights, advanced pawns, etc. |
-| `center_control` | Piece presence (+2.0) and attacks (+1.0) on the four center squares (d4/d5/e4/e5). |
-| `king_safety` | Adjacent pawn shield (+1.0), penalizes open files near king (-1.0) and nearby enemy pieces (-0.5). |
-| `enemy_king_danger` | Proximity of own pieces to enemy king (inverse Chebyshev distance) + attacks on squares adjacent to enemy king. |
-| `mobility` | Pseudo-legal move count differential. |
-| `pawn_structure` | Penalizes doubled (-0.5) and isolated (-0.5) pawns. Rewards passed (+1.0) and connected (+0.3) pawns. |
-| `bishop_pair` | +0.5 bonus if side has two or more bishops. |
-| `rook_activity` | Open file (+0.5), semi-open file (+0.25), and 7th rank (+0.5) bonuses for rooks. |
-| `capture_threats` | Sum of values of pieces that can be captured this turn. |
-| `negative_material` | Piece-count bonus for antichess: rewards having fewer pieces (closer to winning). |
-| `king_proximity` | Atomic-specific: counts own non-pawns adjacent to the enemy king (can trigger king-kill explosion) minus same for opponent. |
-
-## Search Engine
-
-**Algorithm:** Negamax with alpha-beta pruning.
-
-- Configurable search depth (1-3 typical).
-- Move ordering: captures sorted by victim value (MVV) first, then quiet moves.
-- Terminal detection: checkmate (returns loss score), stalemate (returns 0), variant-specific (king explosion, piece depletion).
-- Instrumentation: tracks `nodes_searched` and `search_time_seconds` per move.
-
-## Chess Variant Rules
-
-### Standard Chess
-
-Full implementation: castling (kingside/queenside, all 5 legality conditions), en passant, promotion (Q/R/B/N), check detection via reverse-lookup attack tables. Legal moves filtered to exclude self-check. Deterministic piece iteration order (row 0-7, col 0-7).
-
-### Atomic Chess
-
-- **Explosion on capture:** Both capturing and captured pieces are destroyed.
-- **Adjacent destruction:** All non-pawn pieces within 1 square of the capture are destroyed. Pawns are immune to explosions.
-- **King explosion:** If a king is destroyed in an explosion, that side loses immediately. If both kings are destroyed, the capturing side loses.
-- **Self-preservation:** Captures that would explode the capturing side's own king are filtered as illegal.
-- **Castling rights:** Updated after explosions (revoked if king or rook was destroyed in blast).
-
-### Antichess
-
-- **Forced captures:** If any capture is available, the player must capture.
-- **Winning condition:** Lose all your pieces to win.
-
-## Analysis Methods
-
-### Feature Marginals
-
-For each feature f:
-- `avg_score_with` = mean score rate of all agents containing f
-- `avg_score_without` = mean score rate of all agents not containing f
-- `marginal` = difference (positive means the feature helps)
-- `top_k_frequency` = fraction of top-k agents containing f
-
-### Pairwise Synergy
-
-For each pair (a, b):
-- `synergy = avg_with_both - avg_with_a - avg_with_b + overall_avg`
-- Positive synergy: the pair is worth more together than the sum of parts.
-- Negative synergy: the features are redundant.
-
-### Interpretation
-
-Natural-language summary covering the best agent, top 3 positive-marginal features, least valuable feature, strongest synergy pair, and most redundant pair.
-
-## Chart Generation
-
-Two scripts generate publication-ready visualizations from tournament data:
+After a tournament JSON exists, use `export_data.py` to create CSV/JSON analysis artifacts.
 
 ```bash
-python export_data.py          # Export tournament results to CSV/JSON
-python generate_charts.py      # Generate all charts for all variants
-python generate_charts.py atomic  # Generate charts for one variant
+python export_data.py \
+  --input outputs/data/tournament_results_atomic.json \
+  --output-dir outputs/data/atomic_viz \
+  --variant atomic
 ```
 
-### 16 Charts Per Variant
-
-| # | Chart | Description |
-|---|-------|-------------|
-| 01 | Leaderboard | Agent score rate bar chart |
-| 02 | Win/Loss/Draw | Stacked bar chart per agent |
-| 03 | Feature Importance | Marginal contribution bar chart |
-| 04 | Feature Presence | Avg score with vs. without each feature |
-| 05 | Synergy Heatmap | Pairwise synergy matrix |
-| 06 | Matchup Heatmap | Head-to-head win rates |
-| 07 | Termination Pie | Game outcome distribution |
-| 08 | Game Length Dist | Game length histogram |
-| 09 | Length by Winner | Game length by outcome (box plot) |
-| 10 | Feature Count Perf | Performance by number of features |
-| 11 | Top-K Frequency | Feature frequency among top agents |
-| 12 | Nodes vs Length | Search complexity vs game length |
-| 13 | White Advantage | First-move advantage analysis |
-| 14 | Score Distribution | Agent score rate histogram |
-| 15 | Top Synergies | Strongest synergy/redundancy pairs |
-| 16 | Score vs Length | Score rate vs average game length |
-
-Each variant also gets an `index.html` dashboard that displays all charts with summary stats.
-
-## Project Structure
-
-```
-core/                   Board, Move, move generation, coordinate helpers
-  board.py              8x8 board representation, FEN parsing, terminal detection
-  move.py               Frozen Move dataclass with UCI conversion
-  move_generation.py    Pseudo-legal and legal move generation (all piece types)
-  apply_move.py         Standard move application (castling, en passant, promotion)
-  coordinates.py        Algebraic <-> (row, col) conversion
-  types.py              Square type alias, piece color/type helpers
-
-variants/               Chess variant implementations
-  base.py               Variant dispatch: get_apply_move(), get_generate_legal_moves()
-  standard.py           Standard chess (delegates to core/)
-  atomic.py             Atomic chess (explosions, self-preservation, king destruction)
-  antichess.py          Antichess (forced captures, lose-all-pieces-to-win)
-
-features/               Evaluation feature implementations
-  registry.py           FEATURES dict mapping names to callables (12 features)
-  material.py           Material balance
-  mobility.py           Move count differential
-  king_safety.py        Pawn shield + king exposure
-  king_danger.py        Piece proximity to enemy king
-  capture_threats.py    Capturable piece values
-  piece_position.py     Piece-square table bonuses
-  center_control.py     Center square control
-  pawn_structure.py     Doubled/isolated/passed/connected pawns
-  bishop_pair.py        Bishop pair bonus
-  rook_activity.py      Open file and 7th rank bonuses
-  negative_material.py Piece-count bonus for antichess win condition
-  king_proximity.py Adjacent non-pawns to enemy king vs own king (atomic)
-
-agents/                 Agent generation and evaluation
-  feature_subset_agent.py   Frozen FeatureSubsetAgent dataclass
-  generate_agents.py        Exhaustive or stratified subset generation
-  evaluation.py             Board evaluation using agent's feature weights
-
-search/                 Search engine
-  alpha_beta.py         Negamax with alpha-beta pruning, MVV move ordering
-
-simulation/             Game simulation
-  game.py               play_game() and mock_play_game(), GameResult dataclass
-  random_agent.py       RandomAgent for testing
-
-tournament/             Tournament infrastructure
-  round_robin.py        Full round-robin scheduling and execution
-  leaderboard.py        Win/draw/loss scoring and ranking
-  results_io.py         JSON and CSV serialization
-
-analysis/               Statistical analysis
-  feature_marginals.py  Marginal contribution of each feature
-  synergy.py            Pairwise synergy computation
-  interpretation.py     Natural-language result summary
-
-reports/                Output generation
-  markdown_report.py    Markdown strategy report with tables and interpretation
-
-ui/                     Streamlit web interface
-  app.py                Main app: build, live, analysis, play views
-  chess_viewer.py       Game replay viewer + click-to-move play board (chessboard.js)
-  play_engine.py        Server-side move application and engine reply
-  board.py              SVG board renderer (python-chess)
-  home.py               Animated landing page
-  constants.py          Session state defaults, feature display names
-
-main.py                 CLI entry point (Typer)
-export_data.py          Export tournament data to CSV/JSON for charts
-generate_charts.py      Generate 16 PNG charts + HTML dashboard per variant
-run_depth3.py           Depth-3 atomic tournament script (13 agents)
-
-tests/                  302 tests across 10 test files
-  test_board.py         Board class: layout, copy, FEN
-  test_move_generation.py   All piece types, castling, en passant, check
-  test_standard.py      Standard variant: apply_move, full games
-  test_atomic.py        Atomic: explosions, self-preservation, king destruction
-  test_antichess.py     Antichess: forced captures, win condition
-  test_features.py      All 12 features: registry, return types, starting values
-  test_agents.py        Agent generation, naming, weight normalization
-  test_alpha_beta.py    Search: depth-1 behavior, captures hanging pieces
-  test_tournament.py    Round-robin, leaderboard, results I/O
-  test_analysis.py      Marginals, synergy, interpretation, report generation
-
-outputs/
-  data/                 Tournament result JSONs + exported CSV/JSON per variant
-  charts/               16 PNG charts + index.html dashboard per variant
-  reports/              Markdown strategy reports per variant
-```
-
-## Dependencies
-
-```
-pytest>=8.0.0           Testing
-pandas>=2.0.0           Data manipulation
-numpy>=1.26.0           Numerical computation
-fastapi                 REST + streaming API server (`api/server.py`)
-uvicorn                 ASGI server for FastAPI
-tqdm>=4.66.0            CLI progress bars
-typer>=0.12.0           CLI framework
-rich>=13.0.0            Rich terminal output
-pydantic>=2.0.0         Data validation
-matplotlib>=3.8.0       Chart generation
-streamlit>=1.33.0       Web UI
-plotly>=5.0.0           Interactive charts (Streamlit)
-chess>=1.10.0           SVG board rendering, standard game status
-```
-
-## Running Tests
+### Run tests
 
 ```bash
-pytest                                    # All 302 tests
-pytest tests/test_board.py tests/test_move_generation.py tests/test_standard.py  # Foundation
-pytest tests/test_atomic.py tests/test_features.py tests/test_agents.py tests/test_alpha_beta.py  # Engine
-pytest tests/test_tournament.py tests/test_analysis.py                           # Harness
+pytest -q
 ```
 
-## Determinism
+The test suite covers the board model, standard move generation, move application, variants, feature functions, alpha-beta search, tournament logic, analysis logic, and UI play helpers.
 
-All output is deterministic given the same seed. Move generation iterates pieces in fixed order (row 0-7, col 0-7). Use `random.Random(seed)` (local instance), never `random.seed()` on the global RNG. Run the pipeline twice with the same seed and diff the outputs to verify.
+## Verification status from this inspection
 
-## Conventions
+The repository source was inspected directly from the uploaded zip. A syntax-level compile check was run with:
 
-- **Pieces:** FEN characters. Uppercase = white (`P N B R Q K`), lowercase = black (`p n b r q k`), empty = `None`
-- **Colors:** Always `"w"` or `"b"`. Never `"white"` / `"black"` in data structures.
-- **Coordinates:** `grid[row][col]`. Row 0 = rank 1 (white side). Col 0 = file a.
-- **Agent names:** `Agent_{feat1}__{feat2}` -- double underscore separator, features sorted alphabetically, weights equal (1/N each).
+```bash
+python3 -m compileall -q agents analysis api core features reports search simulation tournament variants main.py export_data.py scripts ui
+```
+
+That compile check completed successfully.
+
+Full test execution was not completed in this container because the system Python available for execution did not have `pytest` installed. The project declares `pytest>=8.0.0` in `requirements.txt`, so a normal project virtual environment should install it through `pip install -r requirements.txt` before running `pytest -q`.
+
+## Current limitations
+
+These are real limitations in the current codebase, not theoretical caveats:
+
+- The alpha-beta engine is intentionally simple: no transposition table, no quiescence search, no iterative deepening, no opening book, and no clock-based time management.
+- Feature-subset agents use equal weights only. The project compares feature inclusion/exclusion, but it does not optimize feature weights.
+- Tournament strength is relative to other generated agents inside the same experiment. It is not an Elo estimate.
+- Chess960 castling is disabled, even though Chess960 starting positions are generated.
+- Antichess ignores check and treats kings as capturable pieces, consistent with the implementation's simplified antichess model.
+- Horde uses pseudo-legal move generation for White because White has no king in this implementation.
+- Pairwise synergy analysis only measures two-feature interactions; it does not model higher-order feature interactions.
+- Custom variant generation depends on an external OpenAI API key unless the code path is replaced with a local model adapter.
+
+## Output artifacts already present
+
+The uploaded repository includes precomputed outputs under `outputs/`, including tournament JSON files for several variants and visualization-ready CSV/JSON directories for at least `standard` and `atomic`. These files are useful for demoing the UI or inspecting past runs, but they should not be treated as universal benchmarks unless the exact run configuration is documented alongside them.
+
+## Engineering intent
+
+EngineLab is best understood as a chess-variant evaluation laboratory. Its value is not in beating strong chess engines. Its value is in making variant strategy measurable: define features, generate controlled agents, run reproducible self-play, and convert the results into interpretable evidence about which heuristics matter under each rule set.
