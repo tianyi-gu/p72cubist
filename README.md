@@ -6,8 +6,8 @@ Given a chess variant and a set of evaluation features, EngineLab creates one al
 
 ## How It Works
 
-1. **Define features** -- 10 evaluation features capture different strategic concepts (material, mobility, king safety, etc.)
-2. **Generate agents** -- Each agent uses a unique subset of features with equal weights. Default: 100 agents via stratified sampling (all 10 singletons + all 45 pairs + the full set + random larger subsets). For 5 or fewer features, all 2^n - 1 subsets are generated exhaustively.
+1. **Define features** -- 12 evaluation features capture different strategic concepts (material, mobility, king safety, etc.)
+2. **Generate agents** -- Each agent uses a unique subset of features with equal weights. Default: 100 agents via stratified sampling (all 12 singletons + all 66 pairs + the full set + random larger subsets). For 5 or fewer features, all 2^n - 1 subsets are generated exhaustively.
 3. **Run tournament** -- Full round-robin where every ordered pair plays one game (agent A as white vs B, and B as white vs A). With 100 agents, that's 9,900 games.
 4. **Analyze results** -- Feature marginal contributions (average score with vs. without each feature), pairwise synergy (do two features perform better together than their individual contributions predict?), and top-k frequency analysis.
 5. **Generate outputs** -- Markdown strategy report, 16 PNG charts with HTML dashboard, and exportable CSV data.
@@ -103,7 +103,7 @@ Moves are validated and applied server-side using the same variant-aware engine 
 
 ## Evaluation Features
 
-All 10 features compute a differential score (positive = good for the side to move):
+All 12 features compute a differential score (positive = good for the side to move):
 
 | Feature | Description |
 |---------|-------------|
@@ -117,6 +117,8 @@ All 10 features compute a differential score (positive = good for the side to mo
 | `bishop_pair` | +0.5 bonus if side has two or more bishops. |
 | `rook_activity` | Open file (+0.5), semi-open file (+0.25), and 7th rank (+0.5) bonuses for rooks. |
 | `capture_threats` | Sum of values of pieces that can be captured this turn. |
+| `antichess_material` | Piece-count bonus for antichess: rewards having fewer pieces (closer to winning). |
+| `explosion_proximity` | Atomic-specific: rewards positioning pieces near clusters of enemy pieces to maximize explosion damage. |
 
 ## Search Engine
 
@@ -218,7 +220,7 @@ variants/               Chess variant implementations
   antichess.py          Antichess (forced captures, lose-all-pieces-to-win)
 
 features/               Evaluation feature implementations
-  registry.py           FEATURES dict mapping names to callables (10 features)
+  registry.py           FEATURES dict mapping names to callables (12 features)
   material.py           Material balance
   mobility.py           Move count differential
   king_safety.py        Pawn shield + king exposure
@@ -229,6 +231,8 @@ features/               Evaluation feature implementations
   pawn_structure.py     Doubled/isolated/passed/connected pawns
   bishop_pair.py        Bishop pair bonus
   rook_activity.py      Open file and 7th rank bonuses
+  antichess_material.py Piece-count bonus for antichess win condition
+  explosion_proximity.py Proximity to enemy piece clusters (atomic)
 
 agents/                 Agent generation and evaluation
   feature_subset_agent.py   Frozen FeatureSubsetAgent dataclass
@@ -274,7 +278,7 @@ tests/                  302 tests across 10 test files
   test_standard.py      Standard variant: apply_move, full games
   test_atomic.py        Atomic: explosions, self-preservation, king destruction
   test_antichess.py     Antichess: forced captures, win condition
-  test_features.py      All 10 features: registry, return types, starting values
+  test_features.py      All 12 features: registry, return types, starting values
   test_agents.py        Agent generation, naming, weight normalization
   test_alpha_beta.py    Search: depth-1 behavior, captures hanging pieces
   test_tournament.py    Round-robin, leaderboard, results I/O
