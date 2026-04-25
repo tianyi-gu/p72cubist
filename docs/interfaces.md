@@ -164,7 +164,7 @@ def generate_atomic_moves(board: Board) -> list[Move]:
     captures that would explode the moving side's own king."""
 ```
 
-## 8. Antichess Variant (Optional)
+## 8. Antichess Variant
 
 ```python
 # variants/antichess.py
