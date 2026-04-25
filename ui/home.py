@@ -1,8 +1,9 @@
 """EngineLab animated landing page.
 
-Renders a full-width hero with Canvas 2D particle effects, glassmorphic
-agent cards with typewriter text, decorative mini chess boards, and a
-dither overlay — all via st.components.v1.html().
+Renders a full-width hero with WebGL neuronal shader background (ported
+from Darwin project), Canvas 2D particle bloom overlay, glassmorphic agent
+cards with typewriter text, and decorative mini chess boards — all via
+st.components.v1.html().
 """
 from __future__ import annotations
 
@@ -28,8 +29,8 @@ body {
   position: relative;
 }
 
-/* ── Particle canvas ───────────────────────────────────────── */
-#particles {
+/* ── WebGL shader background (Darwin NeuroShaderCanvas) ──── */
+#neuro-canvas {
   position: absolute;
   inset: 0;
   z-index: 0;
@@ -37,11 +38,21 @@ body {
   height: 100%;
 }
 
+/* ── Particle overlay (Darwin SideParticles) ─────────────── */
+#particles {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
 /* ── Dither overlay ────────────────────────────────────────── */
 #dither {
   position: absolute;
   inset: 0;
-  z-index: 1;
+  z-index: 2;
   opacity: 0.035;
   background-image: radial-gradient(circle, #bababa 1px, transparent 1px);
   background-size: 4px 4px;
@@ -52,7 +63,7 @@ body {
 .mini-boards {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  z-index: 3;
   pointer-events: none;
 }
 .mini-board {
@@ -81,7 +92,7 @@ body {
 /* ── Content layer ─────────────────────────────────────────── */
 .content {
   position: relative;
-  z-index: 3;
+  z-index: 4;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -233,7 +244,12 @@ body {
 </head>
 <body>
 
+<!-- WebGL neuronal shader background (from Darwin NeuroShaderCanvas) -->
+<canvas id="neuro-canvas"></canvas>
+
+<!-- Canvas 2D particle bloom overlay (from Darwin SideParticles) -->
 <canvas id="particles"></canvas>
+
 <div id="dither"></div>
 
 <!-- Mini chess boards (decorative) -->
@@ -308,99 +324,242 @@ body {
 
 <script>
 /* ================================================================
-   PARTICLE SYSTEM
+   NEURO SHADER BACKGROUND
+   Ported directly from Darwin's NeuroShaderCanvas.jsx
+   https://github.com/qtzx06/darwin/blob/main/src/components/NeuroShaderCanvas.jsx
+   ================================================================ */
+(function() {
+  var canvas = document.getElementById('neuro-canvas');
+  if (!canvas) return;
+  var parent = canvas.parentElement;
+  if (!parent) return;
+
+  var gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+  if (!gl) return;
+
+  // Vertex shader — identical to Darwin
+  var vertexShaderSource =
+    'precision mediump float;\n' +
+    'attribute vec2 a_position;\n' +
+    'varying vec2 vUv;\n' +
+    'void main() {\n' +
+    '  vUv = 0.5 * (a_position + 1.0);\n' +
+    '  gl_Position = vec4(a_position, 0.0, 1.0);\n' +
+    '}\n';
+
+  // Fragment shader — Darwin's neuro_shape with green tint
+  var fragmentShaderSource =
+    'precision mediump float;\n' +
+    'varying vec2 vUv;\n' +
+    'uniform float u_time;\n' +
+    'uniform float u_ratio;\n' +
+    'uniform vec2 u_pointer_position;\n' +
+    '\n' +
+    'vec2 rotate(vec2 uv, float th) {\n' +
+    '  return mat2(cos(th), sin(th), -sin(th), cos(th)) * uv;\n' +
+    '}\n' +
+    '\n' +
+    'float neuro_shape(vec2 uv, float t, float p) {\n' +
+    '  vec2 sine_acc = vec2(0.0);\n' +
+    '  vec2 res = vec2(0.0);\n' +
+    '  float scale = 8.0;\n' +
+    '  for (int j = 0; j < 15; j++) {\n' +
+    '    uv = rotate(uv, 1.0);\n' +
+    '    sine_acc = rotate(sine_acc, 1.0);\n' +
+    '    vec2 layer = uv * scale + float(j) + sine_acc - t;\n' +
+    '    sine_acc += sin(layer);\n' +
+    '    res += (0.5 + 0.5 * cos(layer)) / scale;\n' +
+    '    scale *= (1.2 - 0.07 * p);\n' +
+    '  }\n' +
+    '  return res.x + res.y;\n' +
+    '}\n' +
+    '\n' +
+    'void main() {\n' +
+    '  vec2 uv = 0.5 * vUv;\n' +
+    '  uv.x *= u_ratio;\n' +
+    '  vec2 pointer = vUv - u_pointer_position;\n' +
+    '  pointer.x *= u_ratio;\n' +
+    '  float p = clamp(length(pointer), 0.0, 1.0);\n' +
+    '  p = 0.5 * pow(1.0 - p, 2.0);\n' +
+    '  float t = 0.001 * u_time;\n' +
+    '  float noise = neuro_shape(uv, t, p);\n' +
+    '  noise = 1.2 * pow(noise, 3.0);\n' +
+    '  noise += pow(noise, 10.0);\n' +
+    '  noise = max(0.0, noise - 0.5);\n' +
+    '  noise *= (1.0 - length(vUv - 0.5));\n' +
+    // Tint green instead of white: multiply by EngineLab green
+    '  vec3 color = noise * vec3(0.38, 0.60, 0.14);\n' +
+    '  gl_FragColor = vec4(color, noise);\n' +
+    '}\n';
+
+  function compileShader(source, type) {
+    var shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      console.error('Shader compile error:', gl.getShaderInfoLog(shader));
+      gl.deleteShader(shader);
+      return null;
+    }
+    return shader;
+  }
+
+  var vertexShader = compileShader(vertexShaderSource, gl.VERTEX_SHADER);
+  var fragmentShader = compileShader(fragmentShaderSource, gl.FRAGMENT_SHADER);
+  if (!vertexShader || !fragmentShader) return;
+
+  var program = gl.createProgram();
+  gl.attachShader(program, vertexShader);
+  gl.attachShader(program, fragmentShader);
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    console.error('Program link error:', gl.getProgramInfoLog(program));
+    return;
+  }
+  gl.useProgram(program);
+
+  // Full-screen quad
+  var vertices = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
+  var buffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+  var positionLocation = gl.getAttribLocation(program, 'a_position');
+  gl.enableVertexAttribArray(positionLocation);
+  gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+
+  var timeLocation = gl.getUniformLocation(program, 'u_time');
+  var ratioLocation = gl.getUniformLocation(program, 'u_ratio');
+  var pointerLocation = gl.getUniformLocation(program, 'u_pointer_position');
+
+  // Mouse tracking with smoothing (same as Darwin)
+  var pointer = { x: 0.5, y: 0.5, tX: 0.5, tY: 0.5 };
+  canvas.addEventListener('pointermove', function(e) {
+    var rect = canvas.getBoundingClientRect();
+    pointer.tX = (e.clientX - rect.left) / rect.width;
+    pointer.tY = 1.0 - (e.clientY - rect.top) / rect.height;
+  });
+
+  // Enable blending for transparent background
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+  function resize() {
+    var dpr = Math.min(window.devicePixelRatio, 2);
+    canvas.width = parent.clientWidth * dpr;
+    canvas.height = parent.clientHeight * dpr;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.uniform1f(ratioLocation, canvas.width / canvas.height);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  function render() {
+    pointer.x += (pointer.tX - pointer.x) * 0.5;
+    pointer.y += (pointer.tY - pointer.y) * 0.5;
+
+    gl.uniform1f(timeLocation, performance.now());
+    gl.uniform2f(pointerLocation, pointer.x, pointer.y);
+
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    requestAnimationFrame(render);
+  }
+  render();
+})();
+
+/* ================================================================
+   PARTICLE BLOOM OVERLAY
+   Ported directly from Darwin's SideParticles.jsx
+   https://github.com/qtzx06/darwin/blob/main/src/components/SideParticles.jsx
+   Colors adapted from purple/pink to green/teal.
    ================================================================ */
 (function() {
   var canvas = document.getElementById('particles');
+  if (!canvas) return;
   var ctx = canvas.getContext('2d');
-  var W, H;
+  var particleCount = 200;
+  var particles = [];
+
+  // Match Darwin's particle colors but in green/teal palette
+  var colors = [
+    'rgba(98, 153, 36, 0.4)',
+    'rgba(122, 182, 72, 0.35)',
+    'rgba(45, 138, 110, 0.3)',
+    'rgba(74, 122, 42, 0.25)',
+    'rgba(143, 206, 58, 0.3)'
+  ];
 
   function resize() {
-    W = canvas.width  = canvas.parentElement.clientWidth  || window.innerWidth;
-    H = canvas.height = canvas.parentElement.clientHeight || window.innerHeight;
+    canvas.width = canvas.offsetWidth || canvas.parentElement.clientWidth;
+    canvas.height = canvas.offsetHeight || canvas.parentElement.clientHeight;
   }
   resize();
   window.addEventListener('resize', resize);
 
-  var COLORS = ['#629924','#2d8a6e','#4a7a2a','#7ab648','#3d7a1a','#8fce3a','#5aad2b'];
-  var N = 200;
-  var particles = [];
-
-  function spawn(p) {
-    p.x = Math.random() * W;
-    p.y = Math.random() * H;
-    p.vx = (Math.random() - 0.5) * 0.5;
-    p.vy = (Math.random() - 0.5) * 0.5;
-    p.r  = Math.random() * 3.0 + 1.0;
-    p.color = COLORS[Math.floor(Math.random() * COLORS.length)];
-    p.life = 0;
-    p.maxLife = 100 + Math.random() * 120;
+  function Particle() {
+    this.reset();
   }
 
-  for (var i = 0; i < N; i++) {
-    var p = {};
-    spawn(p);
-    p.life = Math.random() * p.maxLife;
-    particles.push(p);
+  Particle.prototype.reset = function() {
+    this.x = Math.random() * canvas.width;
+    this.y = Math.random() * canvas.height;
+    this.vx = (Math.random() - 0.5) * 0.5;
+    this.vy = (Math.random() - 0.5) * 0.5;
+    this.radius = Math.random() * 2 + 1;
+    this.color = colors[Math.floor(Math.random() * colors.length)];
+    this.life = Math.random() * 100 + 100;
+    this.maxLife = this.life;
+  };
+
+  Particle.prototype.update = function() {
+    this.x += this.vx;
+    this.y += this.vy;
+    this.life--;
+    if (this.life <= 0) this.reset();
+    if (this.x < 0) this.x = canvas.width;
+    if (this.x > canvas.width) this.x = 0;
+    if (this.y < 0) this.y = canvas.height;
+    if (this.y > canvas.height) this.y = 0;
+  };
+
+  Particle.prototype.draw = function() {
+    var opacity = this.life / this.maxLife;
+    var match = this.color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+    if (!match) return;
+    var r = match[1], g = match[2], b = match[3];
+
+    // Outer glow — identical to Darwin
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.radius * 3, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(' + r + ', ' + g + ', ' + b + ', ' + (opacity * 0.15) + ')';
+    ctx.fill();
+
+    // Middle glow
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.radius * 2, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(' + r + ', ' + g + ', ' + b + ', ' + (opacity * 0.4) + ')';
+    ctx.fill();
+
+    // Core
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(' + r + ', ' + g + ', ' + b + ', ' + (opacity * 0.7) + ')';
+    ctx.fill();
+  };
+
+  for (var i = 0; i < particleCount; i++) {
+    particles.push(new Particle());
   }
 
-  function hexToRgb(hex) {
-    var r = parseInt(hex.slice(1,3), 16);
-    var g = parseInt(hex.slice(3,5), 16);
-    var b = parseInt(hex.slice(5,7), 16);
-    return r + ',' + g + ',' + b;
-  }
-
-  var time = 0;
-
-  function draw() {
-    ctx.clearRect(0, 0, W, H);
-    ctx.globalCompositeOperation = 'lighter';
-    time += 0.008;
-
-    for (var i = 0; i < N; i++) {
-      var p = particles[i];
-      // Add sine-wave drift for organic flowing motion
-      var wave = Math.sin(time + p.x * 0.003 + i * 0.1) * 0.3;
-      var wave2 = Math.cos(time * 0.7 + p.y * 0.004 + i * 0.05) * 0.25;
-      p.x += p.vx + wave;
-      p.y += p.vy + wave2;
-      p.life++;
-
-      if (p.x < -10) p.x = W + 10;
-      if (p.x > W + 10) p.x = -10;
-      if (p.y < -10) p.y = H + 10;
-      if (p.y > H + 10) p.y = -10;
-
-      if (p.life > p.maxLife) spawn(p);
-
-      var fade = 1.0;
-      if (p.life < 30) fade = p.life / 30;
-      else if (p.life > p.maxLife - 30) fade = (p.maxLife - p.life) / 30;
-
-      var rgb = hexToRgb(p.color);
-
-      // Outer glow — large soft halo
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r * 8, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(' + rgb + ',' + (0.15 * fade) + ')';
-      ctx.fill();
-
-      // Middle glow
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r * 4, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(' + rgb + ',' + (0.35 * fade) + ')';
-      ctx.fill();
-
-      // Core — bright center
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(' + rgb + ',' + (0.7 * fade) + ')';
-      ctx.fill();
+  function animate() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (var i = 0; i < particles.length; i++) {
+      particles[i].update();
+      particles[i].draw();
     }
-    requestAnimationFrame(draw);
+    requestAnimationFrame(animate);
   }
-  draw();
+  animate();
 })();
 
 /* ================================================================
@@ -427,7 +586,6 @@ body {
       grid.push(row);
     }
 
-    // Place some pieces randomly
     var pieces = [];
     for (var k = 0; k < 5; k++) pieces.push(WP[Math.floor(Math.random()*WP.length)]);
     for (var k = 0; k < 5; k++) pieces.push(BP[Math.floor(Math.random()*BP.length)]);
@@ -457,7 +615,6 @@ body {
     var g = board.grid;
     var c = board.cells;
 
-    // Find occupied and empty squares
     var occ = [], emp = [];
     for (var r = 0; r < 6; r++) {
       for (var col = 0; col < 6; col++) {
@@ -482,7 +639,6 @@ body {
     boards.push(initBoard('mb' + i));
   }
 
-  // Stagger animations so boards move at different times
   boards.forEach(function(b, idx) {
     setInterval(function() { animateBoard(b); }, 1800 + idx * 400);
   });
@@ -532,13 +688,11 @@ body {
     this.phrases = phrases;
     this.pIdx = 0;
     this.lines = [];
-    this.typing = false;
     this.el.innerHTML = '';
   }
 
   Typewriter.prototype.start = function() {
-    var self = this;
-    self._next();
+    this._next();
   };
 
   Typewriter.prototype._next = function() {
@@ -546,19 +700,16 @@ body {
     var phrase = self.phrases[self.pIdx % self.phrases.length];
     self.pIdx++;
 
-    // Add a new line element
     var lineEl = document.createElement('div');
     lineEl.className = 'line';
     self.el.appendChild(lineEl);
     self.lines.push(lineEl);
 
-    // Keep only last 3 lines
     while (self.lines.length > 3) {
       var old = self.lines.shift();
       if (old.parentNode) old.parentNode.removeChild(old);
     }
 
-    // Type character by character
     var charIdx = 0;
     var cursor = document.createElement('span');
     cursor.className = 'cursor';
@@ -571,7 +722,6 @@ body {
         charIdx++;
         setTimeout(typeChar, 30 + Math.random() * 25);
       } else {
-        // Done typing this line — pause, then next
         if (cursor.parentNode) cursor.parentNode.removeChild(cursor);
         setTimeout(function() { self._next(); }, 1800 + Math.random() * 1200);
       }
@@ -579,7 +729,6 @@ body {
     typeChar();
   };
 
-  // Start each terminal with a staggered delay
   for (var i = 0; i < 4; i++) {
     (function(idx) {
       setTimeout(function() {
