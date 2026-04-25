@@ -7,7 +7,9 @@ Given a chess variant and a set of evaluation features, EngineLab creates one al
 ## How It Works
 
 1. **Define features** -- 10 evaluation features capture different strategic concepts (material, mobility, king safety, etc.)
-2. **Generate agents** -- Each agent uses a unique subset of features with equal weights. Default: 100 agents via stratified sampling (all 10 singletons + all 45 pairs + the full set + random larger subsets). For 5 or fewer features, all 2^n - 1 subsets are generated exhaustively.
+2. **Generate agents** -- Each agent uses a unique subset of features with equal weights. Two modes:
+   - **LLM-guided (recommended):** A local DeepSeek model (via Ollama) selects the 7 most strategically valuable features for the given variant, then all 2^7 - 1 = 127 subsets are generated exhaustively. Selection is cached so repeated runs skip the LLM call.
+   - **Standard:** Stratified sampling up to `--max-agents` (default 127): all 10 singletons + all 45 pairs + full set + random larger subsets. Fully exhaustive when 2^n - 1 ≤ max-agents.
 3. **Run tournament** -- Full round-robin where every ordered pair plays one game (agent A as white vs B, and B as white vs A). With 100 agents, that's 9,900 games.
 4. **Analyze results** -- Feature marginal contributions (average score with vs. without each feature), pairwise synergy (do two features perform better together than their individual contributions predict?), and top-k frequency analysis.
 5. **Generate outputs** -- Markdown strategy report, 16 PNG charts with HTML dashboard, and exportable CSV data.
@@ -33,7 +35,15 @@ At depth 2, mobility (move count advantage) paired with the bishop pair bonus em
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# Run the full pipeline (atomic chess, depth 2)
+# (Optional) Install Ollama for LLM-guided feature selection
+brew install ollama
+ollama pull deepseek-r1:7b
+ollama serve   # run in a separate terminal
+
+# Run the full pipeline with LLM-guided feature selection + parallel games
+python main.py full-pipeline --variant atomic --depth 2 --use-llm
+
+# Run without LLM (standard stratified sampling, fully parallel)
 python main.py full-pipeline --variant atomic --depth 2 --max-moves 80
 
 # Run tournament only
@@ -69,7 +79,12 @@ Built with Typer. Run `python main.py --help` for full usage.
 - `--depth`: Search depth for alpha-beta (default: `2`)
 - `--max-moves`: Maximum plies before draw (default: `80`)
 - `--seed`: RNG seed for determinism (default: `42`)
-- `--max-agents`: Cap on agent count for stratified sampling (default: `100`)
+- `--max-agents`: Cap on agent count for stratified sampling (default: `127`)
+- `--use-llm / --no-use-llm`: Use local DeepSeek via Ollama to select the best 7 features (default: off)
+- `--ollama-model`: Ollama model name (default: `deepseek-r1:7b`)
+- `--ollama-url`: Ollama base URL (default: `http://localhost:11434/v1`)
+- `--refresh-llm`: Ignore cached LLM feature selection and call the model again
+- `--workers`: Number of parallel game workers (default: `0` = all CPU cores, `1` = sequential)
 
 ## Streamlit UI
 
@@ -300,6 +315,7 @@ matplotlib>=3.8.0       Chart generation
 streamlit>=1.33.0       Web UI
 plotly>=5.0.0           Interactive charts (Streamlit)
 chess>=1.10.0           SVG board rendering, standard game status
+openai>=1.0.0           OpenAI-compatible client for local Ollama/DeepSeek
 ```
 
 ## Running Tests
