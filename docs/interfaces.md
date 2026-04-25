@@ -214,7 +214,7 @@ Full feature set (12 features):
 - **Dynamic:** `mobility`, `pawn_structure`, `bishop_pair`, `rook_activity`,
   `capture_threats`
 - **Variant-specific:** `negative_material` (piece-count bonus for antichess win condition),
-  `explosion_proximity` (proximity to enemy piece clusters for atomic)
+  `king_proximity` (own non-pawns adjacent to enemy king minus same for opponent; atomic king-kill threat)
 
 ---
 

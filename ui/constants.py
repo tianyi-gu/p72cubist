@@ -25,7 +25,7 @@ FEATURE_DISPLAY_NAMES: dict[str, str] = {
     "rook_activity": "Rook Activity",
     "capture_threats": "Capture Threats",
     "negative_material": "Negative Material ★",
-    "explosion_proximity": "Explosion Proximity ★",
+    "king_proximity": "King Proximity ★",
 }
 
 # Curated top-8 features per variant (ordered by importance)
@@ -37,7 +37,7 @@ VARIANT_TOP_8_FEATURES: dict[str, list[str]] = {
     ],
     "atomic": [
         "mobility", "capture_threats", "center_control", "enemy_king_danger",
-        "explosion_proximity", "piece_position", "bishop_pair", "material",
+        "king_proximity", "piece_position", "bishop_pair", "material",
     ],
     "antichess": [
         "negative_material", "center_control", "mobility", "enemy_king_danger",
@@ -89,4 +89,5 @@ SESSION_DEFAULTS: dict = {
     "play_last_move": None,
     "play_exploded_squares": None,
     "play_flipped": False,
+    "live_feed": [],
 }

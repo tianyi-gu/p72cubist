@@ -15,7 +15,7 @@ class TestFeatureRegistry:
             "material", "piece_position", "center_control", "king_safety",
             "enemy_king_danger", "mobility", "pawn_structure", "bishop_pair",
             "rook_activity", "capture_threats",
-            "negative_material", "explosion_proximity",
+            "negative_material", "king_proximity",
         }
         assert set(get_feature_names()) == expected
 
@@ -29,7 +29,7 @@ class TestFeaturesReturnFloat:
     @pytest.mark.parametrize("feature_name", [
         "material", "piece_position", "center_control", "king_safety",
         "enemy_king_danger", "mobility", "pawn_structure", "bishop_pair",
-        "rook_activity", "capture_threats", "negative_material", "explosion_proximity",
+        "rook_activity", "capture_threats", "negative_material", "king_proximity",
     ])
     def test_returns_float(self, feature_name):
         b = Board.starting_position()
@@ -40,7 +40,7 @@ class TestFeaturesReturnFloat:
     @pytest.mark.parametrize("feature_name", [
         "material", "piece_position", "center_control", "king_safety",
         "enemy_king_danger", "mobility", "pawn_structure", "bishop_pair",
-        "rook_activity", "capture_threats", "negative_material", "explosion_proximity",
+        "rook_activity", "capture_threats", "negative_material", "king_proximity",
     ])
     def test_does_not_mutate_board(self, feature_name):
         b = Board.starting_position()
@@ -231,64 +231,68 @@ class TestAntichessMaterial:
         assert FEATURES["negative_material"](b, "w") == pytest.approx(1.0)
 
 
-class TestExplosionProximity:
+class TestKingProximity:
+    # king_proximity: count of own non-pawns adjacent (dist-1) to enemy king
+    # minus enemy non-pawns adjacent to own king. Each piece = 1 pt.
+
     def test_starting_position_zero(self):
         b = Board.starting_position()
-        assert FEATURES["explosion_proximity"](b, "w") == 0.0
+        assert FEATURES["king_proximity"](b, "w") == 0.0
 
-    def test_own_piece_adjacent_to_enemy_king_positive(self):
+    def test_own_piece_adjacent_scores_one(self):
         b = Board()
         b.set_piece((0, 4), "K")
-        b.set_piece((7, 4), "k")   # black king at (7,4)
-        b.set_piece((6, 4), "R")   # white rook adjacent to black king
-        assert FEATURES["explosion_proximity"](b, "w") == pytest.approx(1.0)
-
-    def test_enemy_piece_adjacent_to_own_king_negative(self):
-        b = Board()
-        b.set_piece((0, 4), "K")   # white king at (0,4)
         b.set_piece((7, 4), "k")
-        b.set_piece((1, 4), "r")   # black rook adjacent to white king
-        assert FEATURES["explosion_proximity"](b, "w") == pytest.approx(-1.0)
+        b.set_piece((6, 4), "R")   # white rook adjacent to black king → 1 pt
+        assert FEATURES["king_proximity"](b, "w") == pytest.approx(1.0)
+
+    def test_own_piece_not_adjacent_scores_zero(self):
+        b = Board()
+        b.set_piece((0, 4), "K")
+        b.set_piece((7, 4), "k")
+        b.set_piece((5, 4), "R")   # dist-2 — not adjacent, not counted
+        assert FEATURES["king_proximity"](b, "w") == pytest.approx(0.0)
+
+    def test_enemy_piece_adjacent_scores_negative(self):
+        b = Board()
+        b.set_piece((0, 4), "K")
+        b.set_piece((7, 4), "k")
+        b.set_piece((1, 4), "r")   # black rook adjacent to white king → -1 pt
+        assert FEATURES["king_proximity"](b, "w") == pytest.approx(-1.0)
 
     def test_pawns_excluded_from_count(self):
         b = Board()
         b.set_piece((0, 4), "K")
         b.set_piece((7, 4), "k")
-        b.set_piece((6, 4), "P")   # white pawn adjacent to black king — immune, not counted
-        b.set_piece((1, 4), "p")   # black pawn adjacent to white king — immune, not counted
-        assert FEATURES["explosion_proximity"](b, "w") == 0.0
+        b.set_piece((6, 4), "P")   # white pawn adjacent — pawns not counted
+        b.set_piece((1, 4), "p")   # black pawn adjacent — not counted
+        assert FEATURES["king_proximity"](b, "w") == 0.0
 
     def test_net_difference(self):
         b = Board()
         b.set_piece((0, 4), "K")
         b.set_piece((7, 4), "k")
-        b.set_piece((6, 3), "R")   # white rook adj to black king
-        b.set_piece((6, 5), "N")   # white knight adj to black king
-        b.set_piece((1, 4), "r")   # black rook adj to white king
+        b.set_piece((6, 3), "R")   # white rook adjacent to black king → +1
+        b.set_piece((6, 5), "N")   # white knight adjacent to black king → +1
+        b.set_piece((1, 4), "r")   # black rook adjacent to white king → -1
         # offensive=2, defensive=1 → 1.0
-        assert FEATURES["explosion_proximity"](b, "w") == pytest.approx(1.0)
+        assert FEATURES["king_proximity"](b, "w") == pytest.approx(1.0)
 
     def test_corner_king_bounded_squares(self):
-        # King in corner has only 3 adjacent squares — no out-of-bounds error
         b = Board()
-        b.set_piece((0, 0), "K")   # white king at corner (0,0)
-        b.set_piece((7, 7), "k")   # black king at corner (7,7)
-        b.set_piece((6, 7), "R")   # white rook adj to black king
-        score = FEATURES["explosion_proximity"](b, "w")
-        assert score == pytest.approx(1.0)
+        b.set_piece((0, 0), "K")
+        b.set_piece((7, 7), "k")
+        b.set_piece((6, 7), "R")   # white rook adjacent to black king at corner → 1 pt
+        assert FEATURES["king_proximity"](b, "w") == pytest.approx(1.0)
 
     def test_no_own_king_returns_zero_defensive(self):
-        # If own king missing, defensive threat is 0 (guard against None)
         b = Board()
         b.set_piece((7, 4), "k")
-        b.set_piece((6, 4), "R")   # white rook adj to black king
-        score = FEATURES["explosion_proximity"](b, "w")
-        assert score == pytest.approx(1.0)  # offensive still counts
+        b.set_piece((6, 4), "R")   # white rook adjacent to black king → 1 pt offensive
+        assert FEATURES["king_proximity"](b, "w") == pytest.approx(1.0)
 
     def test_no_enemy_king_returns_zero_offensive(self):
-        # If enemy king missing, offensive count is 0
         b = Board()
         b.set_piece((0, 4), "K")
-        b.set_piece((1, 4), "r")   # black rook adj to white king
-        score = FEATURES["explosion_proximity"](b, "w")
-        assert score == pytest.approx(-1.0)  # defensive still counts
+        b.set_piece((1, 4), "r")   # black rook adjacent to white king → -1 pt
+        assert FEATURES["king_proximity"](b, "w") == pytest.approx(-1.0)
