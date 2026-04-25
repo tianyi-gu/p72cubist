@@ -41,6 +41,26 @@ VARIANT_FEATURES: dict[str, tuple[list[str], int]] = {
          "pawn_structure", "material", "piece_position", "king_safety"],
         60,
     ),
+    "kingofthehill": (
+        ["material", "center_control", "king_safety", "mobility",
+         "piece_position", "enemy_king_danger", "capture_threats", "pawn_structure"],
+        80,
+    ),
+    "threecheck": (
+        ["enemy_king_danger", "capture_threats", "mobility", "king_safety",
+         "material", "center_control", "piece_position", "pawn_structure"],
+        80,
+    ),
+    "chess960": (
+        ["material", "mobility", "king_safety", "enemy_king_danger",
+         "capture_threats", "center_control", "piece_position", "pawn_structure"],
+        80,
+    ),
+    "horde": (
+        ["material", "pawn_structure", "center_control", "mobility",
+         "piece_position", "capture_threats", "king_safety", "enemy_king_danger"],
+        80,
+    ),
 }
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

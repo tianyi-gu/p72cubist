@@ -16,6 +16,7 @@ class Board:
             "K": True, "Q": True, "k": True, "q": True,
         }
         self.en_passant_square: Square | None = None
+        self.check_count: dict[str, int] = {"w": 0, "b": 0}
 
     @staticmethod
     def starting_position() -> "Board":
@@ -43,6 +44,7 @@ class Board:
         new_board.move_count = self.move_count
         new_board.castling_rights = dict(self.castling_rights)
         new_board.en_passant_square = self.en_passant_square
+        new_board.check_count = dict(self.check_count)
         return new_board
 
     def get_piece(self, square: Square) -> str | None:
@@ -100,10 +102,16 @@ class Board:
 
         halfmove = 0
         fullmove = self.move_count // 2 + 1
-        return (
+        fen = (
             f"{'/'.join(rows)} {self.side_to_move} "
             f"{castling} {ep} {halfmove} {fullmove}"
         )
+        # Append check counts for three-check variant (e.g. "+1+2")
+        w_checks = self.check_count.get("w", 0)
+        b_checks = self.check_count.get("b", 0)
+        if w_checks > 0 or b_checks > 0:
+            fen += f" +{w_checks}+{b_checks}"
+        return fen
 
     @staticmethod
     def from_fen(fen: str) -> "Board":
@@ -151,6 +159,14 @@ class Board:
             board.move_count = (fullmove - 1) * 2 + halfmove_offset
         else:
             board.move_count = 0
+
+        # Check counts for three-check variant (e.g. "+1+2")
+        if len(parts) > 6 and parts[6].startswith("+"):
+            import re as _re
+            m = _re.match(r"\+(\d+)\+(\d+)", parts[6])
+            if m:
+                board.check_count["w"] = int(m.group(1))
+                board.check_count["b"] = int(m.group(2))
 
         return board
 
