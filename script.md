@@ -1,10 +1,10 @@
 ## Intro
 
-We weren’t constrained to just standard Chess, though. After all, there are infinite ways to modify Chess. You can make captures trigger explosions that wipe out nearby pieces. You can flip the objective entirely so that the goal is to lose all your pieces instead of protecting them.
+Throughout history, the rules of chess have remained mostly the same. But there are so many ways to break these rules. And when you do so, you create a variant. 
 
-So we asked: is it possible, given any variant, to systematically and quickly develop an engine that can hold its own? We thought this was a more interesting question to answer, and perhaps we could also walk away with some practical lessons on how to collaborate with agentic AI. 
+We thought it would be interesting to answer the question: given any variant, how do you systematically and quickly develop an engine that can hold its own? And perhaps, we could also walk away with some practical lessons on how to collaborate with agentic AI. 
 
-Well, EngineLab was our answer to that question. At a high level, it agentically modifies a deterministic algorithm to adapt an engine to different variants. 
+Well, EngineLab was our answer to that question.
 
 ## Research and planning
 
