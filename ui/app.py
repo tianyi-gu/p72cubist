@@ -517,7 +517,38 @@ def _render_board_area() -> None:
 # ---------------------------------------------------------------------------
 
 def _render_build_panel() -> None:
-    st.markdown("### Build Your Engine")
+    # Load existing results (quick start)
+    st.markdown("### Load Existing Results")
+    data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "data")
+    json_files = []
+    if os.path.isdir(data_dir):
+        json_files = sorted(
+            f for f in os.listdir(data_dir)
+            if f.endswith(".json") and f.startswith("tournament_results")
+        )
+    if json_files:
+        chosen = st.selectbox(
+            "Load saved results",
+            options=[""] + json_files,
+            format_func=lambda f: f.replace("tournament_results_", "").replace(".json", "").title() if f else "Select...",
+            label_visibility="collapsed",
+            key="load_results_select",
+        )
+        if chosen and st.button("Load", type="primary", use_container_width=True):
+            path = os.path.join(data_dir, chosen)
+            results = load_results_json(path)
+            variant = chosen.replace("tournament_results_", "").replace(".json", "")
+            _analyze_results(results, [], variant, {"variant": variant})
+            st.rerun()
+    else:
+        st.caption("No saved results found in outputs/data/.")
+
+    # Separator
+    st.markdown("---")
+
+    # Build your own engine
+    st.markdown("### Build Your Own Engine")
+    st.caption("Run a new tournament (takes longer)")
 
     # Variant selector
     st.caption("VARIANT")
@@ -572,36 +603,10 @@ def _render_build_panel() -> None:
 
     # Action buttons
     can_run = len(selected) >= 2
-    if st.button("Build Engine", type="primary", use_container_width=True, disabled=not can_run):
+    if st.button("Build Engine", use_container_width=True, disabled=not can_run):
         _start_tournament()
     if not can_run:
         st.caption("Select at least 2 features.")
-
-    # Load existing results
-    st.markdown('<div style="margin-top:16px;"></div>', unsafe_allow_html=True)
-    st.caption("OR LOAD RESULTS")
-    data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "data")
-    json_files = []
-    if os.path.isdir(data_dir):
-        json_files = sorted(
-            f for f in os.listdir(data_dir)
-            if f.endswith(".json") and f.startswith("tournament_results")
-        )
-    if json_files:
-        chosen = st.selectbox(
-            "Load saved results",
-            options=[""] + json_files,
-            format_func=lambda f: f.replace("tournament_results_", "").replace(".json", "").title() if f else "Select...",
-            label_visibility="collapsed",
-            key="load_results_select",
-        )
-        if chosen and st.button("Load", use_container_width=True):
-            path = os.path.join(data_dir, chosen)
-            results = load_results_json(path)
-            # Infer variant from filename
-            variant = chosen.replace("tournament_results_", "").replace(".json", "")
-            _analyze_results(results, [], variant, {"variant": variant})
-            st.rerun()
 
 
 # ---------------------------------------------------------------------------
