@@ -6,7 +6,7 @@ We thought it would be interesting to answer the question: given any variant, ho
 
 Well, EngineLab was our answer to that question.
 
-## Research and planning
+## Research and Planning
 
 To better understand how AI could help our development process, we sifted through literature and media. Following the footsteps of professional researchers, we treated AI as a conversation partner that we can enrich but also challenge our ideas. From the ChatDev framework, we utilized an engineering harness with supervising agents, planning agents, and execution agents, and more. 
 
