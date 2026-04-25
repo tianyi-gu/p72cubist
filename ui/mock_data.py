@@ -41,6 +41,10 @@ def generate_mock_session_state(seed: int = 42) -> dict:
     report_md = _generate_report_md(leaderboard, marginals)
     config_snapshot = _make_config_snapshot()
 
+    best = leaderboard[0] if leaderboard else None
+    worst = leaderboard[-1] if len(leaderboard) > 1 else None
+    sample_moves, sample_result = _generate_sample_game(rng)
+
     return {
         "agents": agents,
         "results": results,
@@ -51,6 +55,11 @@ def generate_mock_session_state(seed: int = 42) -> dict:
         "report_md": report_md,
         "config_snapshot": config_snapshot,
         "duration_seconds": 142.3,
+        # Game viewer sample
+        "sample_game_moves": sample_moves,
+        "sample_game_white": best.agent_name if best else "White",
+        "sample_game_black": worst.agent_name if worst else "Black",
+        "sample_game_result": sample_result,
     }
 
 
@@ -440,6 +449,33 @@ def _generate_report_md(
     ]
 
     return "\n".join(lines)
+
+
+def _generate_sample_game(rng: random.Random) -> tuple[list[str], str]:
+    """Play a short random legal game; return (uci_moves, result_string)."""
+    try:
+        import chess as chess_lib
+        board = chess_lib.Board()
+        moves: list[str] = []
+        for _ in range(60):
+            if board.is_game_over():
+                break
+            legal = list(board.legal_moves)
+            move = rng.choice(legal)
+            moves.append(move.uci())
+            board.push(move)
+        outcome = board.outcome()
+        if outcome is None:
+            result = "½-½"
+        elif outcome.winner is True:
+            result = "1-0"
+        elif outcome.winner is False:
+            result = "0-1"
+        else:
+            result = "½-½"
+        return moves, result
+    except Exception:
+        return [], ""
 
 
 def _make_config_snapshot() -> dict:

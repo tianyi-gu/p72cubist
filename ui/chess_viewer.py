@@ -1,0 +1,340 @@
+"""
+Chess game viewer Streamlit component.
+
+Renders an interactive chess board with move navigation styled like
+a professional chess website (chess.com / lichess aesthetic).
+Uses chessboard.js + chess.js; no external image CDN dependency
+for piece images — falls back gracefully to Unicode if unavailable.
+"""
+from __future__ import annotations
+
+import json
+
+import streamlit.components.v1 as components
+
+# Piece images — chessboard.js Wikipedia set served from the library's own CDN.
+# The {piece} literal stays in the JS string; __PLACEHOLDER__ tokens are Python vars.
+_PIECE_THEME_URL = "https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png"
+
+_HTML_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<script src="https://code.jquery.com/jquery-3.7.1.min.js" crossorigin="anonymous"></script>
+<link  rel="stylesheet"
+       href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
+       crossorigin="anonymous">
+<script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"
+        crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"
+        crossorigin="anonymous"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #1a1a2e;
+    color: #e6edf3;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 13px;
+    display: flex;
+    justify-content: center;
+    padding: 10px 4px 4px;
+  }
+
+  /* ── Outer wrapper ─────────────────────────────────────────── */
+  .wrapper {
+    display: flex;
+    gap: 14px;
+    width: 100%;
+    max-width: 740px;
+  }
+
+  /* ── Board column ──────────────────────────────────────────── */
+  .board-col { flex: 0 0 auto; }
+
+  .player-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 2px;
+    font-weight: 600;
+  }
+  .pip {
+    width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0;
+  }
+  .pip-white { background: #f0d9b5; border: 1px solid #aaa; }
+  .pip-black { background: #272727; border: 1px solid #555; }
+  .player-name { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .player-score { margin-left: auto; color: #00e676; font-size: 12px; }
+
+  #board { width: __BOARD_SIZE__px; }
+
+  /* chessboard.js board border */
+  .board-b72b1 {
+    border: 2px solid #3d3d5c !important;
+    border-radius: 3px;
+  }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 0 0;
+  }
+  .ctrl-btn {
+    background: #16213e;
+    border: 1px solid #0f3460;
+    color: #e6edf3;
+    width: 32px; height: 32px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 14px;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.12s;
+    flex-shrink: 0;
+  }
+  .ctrl-btn:hover { background: #0f3460; }
+  .ctrl-btn:disabled { opacity: 0.35; cursor: default; }
+  .move-indicator {
+    flex: 1; text-align: center;
+    color: #8b949e; font-size: 12px;
+  }
+
+  /* ── Side panel ────────────────────────────────────────────── */
+  .side-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .status-card {
+    background: #16213e;
+    border: 1px solid #0f3460;
+    border-radius: 8px;
+    padding: 10px 13px;
+  }
+  .status-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #8b949e;
+    margin-bottom: 3px;
+  }
+  #status-text { font-size: 13px; }
+
+  .movelist-card {
+    background: #0e1117;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 10px 12px;
+    flex: 1;
+    overflow-y: auto;
+    font-family: 'Courier New', monospace;
+    font-size: 12.5px;
+    line-height: 1.9;
+    max-height: __MOVELIST_HEIGHT__px;
+  }
+
+  .move-pair { display: flex; align-items: baseline; gap: 2px; }
+  .move-num  { color: #6a7280; min-width: 26px; flex-shrink: 0; }
+  .mv {
+    background: none; border: none;
+    color: #c9d1d9; cursor: pointer;
+    padding: 1px 5px; border-radius: 3px;
+    font-family: inherit; font-size: inherit;
+    min-width: 52px;
+  }
+  .mv:hover  { background: #21262d; }
+  .mv.active { background: #00e676; color: #0e1117; font-weight: 700; }
+
+  .result-badge {
+    display: inline-block;
+    background: #21262d;
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    padding: 1px 7px;
+    font-size: 12px;
+    margin-top: 4px;
+    color: #00e676;
+  }
+</style>
+</head>
+<body>
+<div class="wrapper">
+
+  <!-- Board column -->
+  <div class="board-col">
+    <div class="player-row">
+      <span class="pip pip-black"></span>
+      <span class="player-name" id="black-name">Black</span>
+    </div>
+    <div id="board"></div>
+    <div class="player-row">
+      <span class="pip pip-white"></span>
+      <span class="player-name" id="white-name">White</span>
+    </div>
+    <div class="controls">
+      <button class="ctrl-btn" id="btn-first"  title="First move (Home)"  onclick="goFirst()">&#9664;&#9664;</button>
+      <button class="ctrl-btn" id="btn-prev"   title="Previous move (←)" onclick="goPrev()">&#9664;</button>
+      <span   class="move-indicator" id="indicator">Start</span>
+      <button class="ctrl-btn" id="btn-next"   title="Next move (→)"     onclick="goNext()">&#9654;</button>
+      <button class="ctrl-btn" id="btn-last"   title="Last move (End)"   onclick="goLast()">&#9654;&#9654;</button>
+    </div>
+  </div>
+
+  <!-- Side panel -->
+  <div class="side-col">
+    <div class="status-card">
+      <div class="status-label">Position</div>
+      <div id="status-text">Starting position</div>
+    </div>
+    <div class="movelist-card" id="movelist"></div>
+  </div>
+</div>
+
+<script>
+// ── Data injected by Python ──────────────────────────────────────────────────
+var UCI_MOVES  = __UCI_MOVES__;
+var WHITE_NAME = "__WHITE_NAME__";
+var BLACK_NAME = "__BLACK_NAME__";
+var RESULT     = "__RESULT__";
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+document.getElementById('white-name').textContent = WHITE_NAME;
+document.getElementById('black-name').textContent = BLACK_NAME;
+
+var game = new Chess();
+var fens     = [game.fen()];
+var sanMoves = [];
+
+UCI_MOVES.forEach(function(uci) {
+  var mv = game.move({ from: uci.slice(0,2), to: uci.slice(2,4),
+                       promotion: uci[4] || 'q' });
+  if (mv) { sanMoves.push(mv.san); fens.push(game.fen()); }
+});
+
+var cursor = 0;
+
+// ── Board ────────────────────────────────────────────────────────────────────
+var board = Chessboard('board', {
+  position:   'start',
+  pieceTheme: '__PIECE_THEME__',
+  showNotation: true,
+  draggable:  false,
+});
+
+// ── Move list HTML ───────────────────────────────────────────────────────────
+(function buildMoveList() {
+  var html = '';
+  for (var i = 0; i < sanMoves.length; i++) {
+    if (i % 2 === 0) {
+      if (i) html += '</div>';
+      html += '<div class="move-pair"><span class="move-num">' + (i/2+1|0) + '.</span>';
+    }
+    html += '<button class="mv" data-idx="'+(i+1)+'" onclick="jumpTo('+(i+1)+')">'
+          + sanMoves[i] + '</button>';
+  }
+  if (sanMoves.length) { html += '</div>'; }
+  if (RESULT) html += '<div><span class="result-badge">' + RESULT + '</span></div>';
+  document.getElementById('movelist').innerHTML = html ||
+    '<span style="color:#6a7280">No moves recorded</span>';
+})();
+
+// ── Navigation ───────────────────────────────────────────────────────────────
+function updateUI() {
+  board.position(fens[cursor], true);
+
+  // Indicator
+  var ind = document.getElementById('indicator');
+  if      (cursor === 0)              ind.textContent = 'Start';
+  else if (cursor === fens.length-1)  ind.textContent = 'End  ·  move ' + cursor;
+  else {
+    var n    = Math.ceil(cursor / 2);
+    var side = cursor % 2 === 1 ? 'White' : 'Black';
+    ind.textContent = 'Move ' + n + ' · ' + side;
+  }
+
+  // Status bar — simple result or active side
+  var st = document.getElementById('status-text');
+  if (cursor === fens.length-1 && RESULT) {
+    st.textContent = 'Game over · ' + RESULT;
+  } else {
+    var g2 = new Chess(fens[cursor]);
+    st.textContent = g2.turn() === 'w' ? 'White to move' : 'Black to move';
+    if (g2.in_check())    st.textContent += '  ·  Check!';
+    if (g2.in_checkmate()) st.textContent = 'Checkmate';
+    if (g2.in_stalemate()) st.textContent = 'Stalemate';
+  }
+
+  // Highlight active move button & scroll into view
+  document.querySelectorAll('.mv').forEach(function(b) {
+    b.classList.toggle('active', parseInt(b.dataset.idx) === cursor);
+  });
+  var active = document.querySelector('.mv.active');
+  if (active) active.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+
+  // Button states
+  document.getElementById('btn-first').disabled = cursor === 0;
+  document.getElementById('btn-prev').disabled  = cursor === 0;
+  document.getElementById('btn-next').disabled  = cursor >= fens.length-1;
+  document.getElementById('btn-last').disabled  = cursor >= fens.length-1;
+}
+
+function goFirst()  { cursor = 0;              updateUI(); }
+function goLast()   { cursor = fens.length-1;  updateUI(); }
+function goNext()   { if (cursor < fens.length-1) { cursor++; updateUI(); } }
+function goPrev()   { if (cursor > 0)             { cursor--; updateUI(); } }
+function jumpTo(i)  { cursor = i;              updateUI(); }
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown')  { goNext();  e.preventDefault(); }
+  if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')    { goPrev();  e.preventDefault(); }
+  if (e.key === 'Home')                                  { goFirst(); e.preventDefault(); }
+  if (e.key === 'End')                                   { goLast();  e.preventDefault(); }
+});
+
+$(window).resize(function() { board.resize(); });
+
+updateUI();
+</script>
+</body>
+</html>
+"""
+
+
+def chess_game_viewer(
+    moves: list[str],
+    white_name: str = "White",
+    black_name: str = "Black",
+    result: str = "",
+    board_size: int = 380,
+    height: int = 560,
+) -> None:
+    """Render an interactive chess game viewer inside a Streamlit app.
+
+    Args:
+        moves: List of UCI move strings, e.g. ["e2e4", "e7e5", ...].
+        white_name: Display name for the white player.
+        black_name: Display name for the black player.
+        result: Short result string shown at the end of the move list, e.g. "1-0".
+        board_size: Board width/height in pixels (square).
+        height: Component iframe height in pixels.
+    """
+    movelist_height = height - 210
+
+    def _esc(s: str) -> str:
+        return s.replace("\\", "\\\\").replace('"', '\\"')
+
+    html = (
+        _HTML_TEMPLATE
+        .replace("__UCI_MOVES__",       json.dumps(moves))
+        .replace("__WHITE_NAME__",      _esc(white_name))
+        .replace("__BLACK_NAME__",      _esc(black_name))
+        .replace("__RESULT__",          _esc(result))
+        .replace("__PIECE_THEME__",     _PIECE_THEME_URL)
+        .replace("__BOARD_SIZE__",      str(board_size))
+        .replace("__MOVELIST_HEIGHT__", str(max(movelist_height, 160)))
+    )
+    components.html(html, height=height, scrolling=False)

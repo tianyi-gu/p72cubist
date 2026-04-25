@@ -29,6 +29,67 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# Chess-website global CSS ────────────────────────────────────────────────────
+st.markdown(
+    """
+    <style>
+    /* Tighter top padding — standard Streamlit wastes a lot of space */
+    .block-container { padding-top: 1.5rem !important; }
+
+    /* Masthead logo row */
+    .eng-header {
+        display: flex; align-items: center; gap: 10px;
+        padding: 0 0 18px 0;
+        border-bottom: 1px solid #0f3460;
+        margin-bottom: 20px;
+    }
+    .eng-logo  { font-size: 2rem; line-height: 1; }
+    .eng-title { font-size: 1.4rem; font-weight: 700; color: #e6edf3; letter-spacing: -0.5px; }
+    .eng-sub   { font-size: 0.75rem; color: #8b949e; }
+
+    /* Variant selector cards */
+    .variant-card {
+        border-radius: 8px; padding: 12px 16px;
+        background: #161b22; cursor: pointer;
+        transition: border-color 0.15s;
+    }
+
+    /* Section headers styled like chess.com section titles */
+    h2, h3 { letter-spacing: -0.3px !important; }
+    h3 { border-left: 3px solid #00e676; padding-left: 10px !important; }
+
+    /* Metric cards — slightly more prominent */
+    div[data-testid="metric-container"] {
+        background: #161b22;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        padding: 14px 18px !important;
+    }
+
+    /* Data tables */
+    div[data-testid="stDataFrame"] { border: 1px solid #30363d; border-radius: 6px; overflow: hidden; }
+
+    /* Buttons — primary green */
+    div[data-testid="stButton"] > button[kind="primary"] {
+        background: #00e676 !important;
+        color: #0e1117 !important;
+        font-weight: 700 !important;
+        border: none !important;
+    }
+    div[data-testid="stButton"] > button[kind="primary"]:hover {
+        background: #00c264 !important;
+    }
+
+    /* Dividers */
+    hr { border-color: #21262d !important; }
+
+    /* Info/success banners */
+    div[data-testid="stAlert"] { border-radius: 8px !important; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # ---------------------------------------------------------------------------
 # Presets
 # ---------------------------------------------------------------------------
@@ -143,8 +204,14 @@ def _run_tournament(config: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def _render_setup() -> None:
-    st.title("EngineLab")
-    st.caption("Feature-subset strategy discovery for chess variants")
+    st.markdown(
+        '<div class="eng-header">'
+        '<div class="eng-logo">♟</div>'
+        '<div><div class="eng-title">EngineLab</div>'
+        '<div class="eng-sub">Feature-subset strategy discovery for chess variants</div></div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
     st.divider()
 
     # Variant cards
@@ -357,6 +424,14 @@ def _render_results() -> None:
     snap = st.session_state.get("config_snapshot") or {}
     duration = st.session_state.get("duration_seconds")
 
+    st.markdown(
+        '<div class="eng-header">'
+        '<div class="eng-logo">♟</div>'
+        '<div><div class="eng-title">EngineLab · Results</div>'
+        '<div class="eng-sub">Tournament analysis complete</div></div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
     st.success("Tournament complete!")
 
     # Summary metrics
@@ -383,6 +458,8 @@ def _render_results() -> None:
     _render_features_section(marginals, snap.get("selected_features", ALL_FEATURES))
     st.divider()
     _render_synergy_section(synergies, snap.get("selected_features", ALL_FEATURES))
+    st.divider()
+    _render_game_viewer_section()
     st.divider()
     _render_interpretation_section(interpretation)
     st.divider()
@@ -541,6 +618,37 @@ def _render_synergy_section(synergies: list, feature_names: list[str]) -> None:
         yaxis=dict(autorange="reversed"),
     )
     st.plotly_chart(fig2, use_container_width=True)
+
+
+def _render_game_viewer_section() -> None:
+    """Show an interactive board replay for the sample / best game."""
+    moves = st.session_state.get("sample_game_moves") or []
+    white = st.session_state.get("sample_game_white", "White")
+    black = st.session_state.get("sample_game_black", "Black")
+    result = st.session_state.get("sample_game_result", "")
+
+    if not moves:
+        st.caption("No game replay available.")
+        return
+
+    def _short(name: str) -> str:
+        return name.replace("Agent_", "").replace("__", " + ")
+
+    st.subheader("Game Replay")
+    st.caption(
+        f"Use ← → arrow keys or the controls below to step through moves.  "
+        f"**{len(moves)}** plies recorded."
+    )
+
+    from ui.chess_viewer import chess_game_viewer
+    chess_game_viewer(
+        moves=moves,
+        white_name=_short(white),
+        black_name=_short(black),
+        result=result,
+        board_size=380,
+        height=560,
+    )
 
 
 def _render_interpretation_section(interpretation: str) -> None:
