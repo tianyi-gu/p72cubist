@@ -1,19 +1,19 @@
 """
-Chess game viewer Streamlit component.
+Chess board rendering utilities for the EngineLab Streamlit UI.
 
-Renders an interactive chess board with move navigation styled like
-a professional chess website (chess.com / lichess aesthetic).
-Uses chessboard.js + chess.js; no external image CDN dependency
-for piece images — falls back gracefully to Unicode if unavailable.
+Two public functions:
+  chess_game_viewer  — interactive game replay (chessboard.js + chess.js)
+  chess_play_board   — static SVG position viewer (python-chess)
 """
 from __future__ import annotations
 
 import json
 
+import streamlit as st
 import streamlit.components.v1 as components
 
-# Piece images — chessboard.js Wikipedia set served from the library's own CDN.
-# The {piece} literal stays in the JS string; __PLACEHOLDER__ tokens are Python vars.
+# Piece images — chessboard.js Wikipedia set from the library's own CDN.
+# The {piece} literal stays in the JS string; __PIECE_THEME__ is the Python placeholder.
 _PIECE_THEME_URL = "https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png"
 
 _HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -32,8 +32,8 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   body {
-    background: #1a1a2e;
-    color: #e6edf3;
+    background: #161512;
+    color: #bababa;
     font-family: 'Helvetica Neue', Arial, sans-serif;
     font-size: 13px;
     display: flex;
@@ -46,11 +46,12 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     display: flex;
     gap: 14px;
     width: 100%;
-    max-width: 740px;
   }
 
   /* ── Board column ──────────────────────────────────────────── */
-  .board-col { flex: 0 0 auto; }
+  .board-col { flex: 0 1 auto; min-width: 0; }
+
+  #board { width: 100%; }
 
   .player-row {
     display: flex;
@@ -65,13 +66,10 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   .pip-white { background: #f0d9b5; border: 1px solid #aaa; }
   .pip-black { background: #272727; border: 1px solid #555; }
   .player-name { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .player-score { margin-left: auto; color: #00e676; font-size: 12px; }
-
-  #board { width: __BOARD_SIZE__px; }
 
   /* chessboard.js board border */
   .board-b72b1 {
-    border: 2px solid #3d3d5c !important;
+    border: 2px solid #3a3a38 !important;
     border-radius: 3px;
   }
 
@@ -82,9 +80,9 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     padding: 8px 0 0;
   }
   .ctrl-btn {
-    background: #16213e;
-    border: 1px solid #0f3460;
-    color: #e6edf3;
+    background: #272522;
+    border: 1px solid #3a3a38;
+    color: #bababa;
     width: 32px; height: 32px;
     border-radius: 5px;
     cursor: pointer;
@@ -93,11 +91,11 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     transition: background 0.12s;
     flex-shrink: 0;
   }
-  .ctrl-btn:hover { background: #0f3460; }
+  .ctrl-btn:hover { background: #3a3a38; }
   .ctrl-btn:disabled { opacity: 0.35; cursor: default; }
   .move-indicator {
     flex: 1; text-align: center;
-    color: #8b949e; font-size: 12px;
+    color: #8b8580; font-size: 12px;
   }
 
   /* ── Side panel ────────────────────────────────────────────── */
@@ -110,8 +108,8 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
 
   .status-card {
-    background: #16213e;
-    border: 1px solid #0f3460;
+    background: #272522;
+    border: 1px solid #3a3a38;
     border-radius: 8px;
     padding: 10px 13px;
   }
@@ -119,14 +117,14 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.6px;
-    color: #8b949e;
+    color: #8b8580;
     margin-bottom: 3px;
   }
   #status-text { font-size: 13px; }
 
   .movelist-card {
-    background: #0e1117;
-    border: 1px solid #30363d;
+    background: #272522;
+    border: 1px solid #3a3a38;
     border-radius: 8px;
     padding: 10px 12px;
     flex: 1;
@@ -138,26 +136,26 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
 
   .move-pair { display: flex; align-items: baseline; gap: 2px; }
-  .move-num  { color: #6a7280; min-width: 26px; flex-shrink: 0; }
+  .move-num  { color: #6a7068; min-width: 26px; flex-shrink: 0; }
   .mv {
     background: none; border: none;
-    color: #c9d1d9; cursor: pointer;
+    color: #bababa; cursor: pointer;
     padding: 1px 5px; border-radius: 3px;
     font-family: inherit; font-size: inherit;
     min-width: 52px;
   }
-  .mv:hover  { background: #21262d; }
-  .mv.active { background: #00e676; color: #0e1117; font-weight: 700; }
+  .mv:hover  { background: #3a3a38; }
+  .mv.active { background: #629924; color: #fff; font-weight: 700; }
 
   .result-badge {
     display: inline-block;
-    background: #21262d;
-    border: 1px solid #30363d;
+    background: #272522;
+    border: 1px solid #3a3a38;
     border-radius: 4px;
     padding: 1px 7px;
     font-size: 12px;
     margin-top: 4px;
-    color: #00e676;
+    color: #bababa;
   }
 </style>
 </head>
@@ -176,11 +174,11 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
       <span class="player-name" id="white-name">White</span>
     </div>
     <div class="controls">
-      <button class="ctrl-btn" id="btn-first"  title="First move (Home)"  onclick="goFirst()">&#9664;&#9664;</button>
-      <button class="ctrl-btn" id="btn-prev"   title="Previous move (←)" onclick="goPrev()">&#9664;</button>
+      <button class="ctrl-btn" id="btn-first" title="First move (Home)"  onclick="goFirst()">&#9664;&#9664;</button>
+      <button class="ctrl-btn" id="btn-prev"  title="Previous move (&#8592;)" onclick="goPrev()">&#9664;</button>
       <span   class="move-indicator" id="indicator">Start</span>
-      <button class="ctrl-btn" id="btn-next"   title="Next move (→)"     onclick="goNext()">&#9654;</button>
-      <button class="ctrl-btn" id="btn-last"   title="Last move (End)"   onclick="goLast()">&#9654;&#9654;</button>
+      <button class="ctrl-btn" id="btn-next"  title="Next move (&#8594;)"     onclick="goNext()">&#9654;</button>
+      <button class="ctrl-btn" id="btn-last"  title="Last move (End)"   onclick="goLast()">&#9654;&#9654;</button>
     </div>
   </div>
 
@@ -219,10 +217,11 @@ var cursor = 0;
 
 // ── Board ────────────────────────────────────────────────────────────────────
 var board = Chessboard('board', {
-  position:   'start',
+  position: 'start',
   pieceTheme: '__PIECE_THEME__',
   showNotation: true,
-  draggable:  false,
+  draggable: false,
+  responsive: true,
 });
 
 // ── Move list HTML ───────────────────────────────────────────────────────────
@@ -239,7 +238,7 @@ var board = Chessboard('board', {
   if (sanMoves.length) { html += '</div>'; }
   if (RESULT) html += '<div><span class="result-badge">' + RESULT + '</span></div>';
   document.getElementById('movelist').innerHTML = html ||
-    '<span style="color:#6a7280">No moves recorded</span>';
+    '<span style="color:#6a7068">No moves recorded</span>';
 })();
 
 // ── Navigation ───────────────────────────────────────────────────────────────
@@ -248,22 +247,22 @@ function updateUI() {
 
   // Indicator
   var ind = document.getElementById('indicator');
-  if      (cursor === 0)              ind.textContent = 'Start';
-  else if (cursor === fens.length-1)  ind.textContent = 'End  ·  move ' + cursor;
+  if      (cursor === 0)             ind.textContent = 'Start';
+  else if (cursor === fens.length-1) ind.textContent = 'End · move ' + cursor;
   else {
     var n    = Math.ceil(cursor / 2);
     var side = cursor % 2 === 1 ? 'White' : 'Black';
     ind.textContent = 'Move ' + n + ' · ' + side;
   }
 
-  // Status bar — simple result or active side
+  // Status bar
   var st = document.getElementById('status-text');
   if (cursor === fens.length-1 && RESULT) {
     st.textContent = 'Game over · ' + RESULT;
   } else {
     var g2 = new Chess(fens[cursor]);
     st.textContent = g2.turn() === 'w' ? 'White to move' : 'Black to move';
-    if (g2.in_check())    st.textContent += '  ·  Check!';
+    if (g2.in_check())     st.textContent += ' · Check!';
     if (g2.in_checkmate()) st.textContent = 'Checkmate';
     if (g2.in_stalemate()) st.textContent = 'Stalemate';
   }
@@ -282,11 +281,11 @@ function updateUI() {
   document.getElementById('btn-last').disabled  = cursor >= fens.length-1;
 }
 
-function goFirst()  { cursor = 0;              updateUI(); }
-function goLast()   { cursor = fens.length-1;  updateUI(); }
+function goFirst()  { cursor = 0;             updateUI(); }
+function goLast()   { cursor = fens.length-1; updateUI(); }
 function goNext()   { if (cursor < fens.length-1) { cursor++; updateUI(); } }
 function goPrev()   { if (cursor > 0)             { cursor--; updateUI(); } }
-function jumpTo(i)  { cursor = i;              updateUI(); }
+function jumpTo(i)  { cursor = i;             updateUI(); }
 
 document.addEventListener('keydown', function(e) {
   if (e.key === 'ArrowRight' || e.key === 'ArrowDown')  { goNext();  e.preventDefault(); }
@@ -312,17 +311,17 @@ def chess_game_viewer(
     board_size: int = 380,
     height: int = 560,
 ) -> None:
-    """Render an interactive chess game viewer inside a Streamlit app.
+    """Render an interactive chess game replay viewer inside a Streamlit app.
 
     Args:
-        moves: List of UCI move strings, e.g. ["e2e4", "e7e5", ...].
-        white_name: Display name for the white player.
-        black_name: Display name for the black player.
-        result: Short result string shown at the end of the move list, e.g. "1-0".
-        board_size: Board width/height in pixels (square).
-        height: Component iframe height in pixels.
+        moves:       List of UCI move strings, e.g. ["e2e4", "e7e5", ...].
+        white_name:  Display name for the white player.
+        black_name:  Display name for the black player.
+        result:      Short result string shown at the end of the move list, e.g. "1-0".
+        board_size:  Unused (board is now responsive); kept for API compatibility.
+        height:      Component iframe height in pixels.
     """
-    movelist_height = height - 210
+    movelist_height = max(height - 210, 160)
 
     def _esc(s: str) -> str:
         return s.replace("\\", "\\\\").replace('"', '\\"')
@@ -334,7 +333,26 @@ def chess_game_viewer(
         .replace("__BLACK_NAME__",      _esc(black_name))
         .replace("__RESULT__",          _esc(result))
         .replace("__PIECE_THEME__",     _PIECE_THEME_URL)
-        .replace("__BOARD_SIZE__",      str(board_size))
-        .replace("__MOVELIST_HEIGHT__", str(max(movelist_height, 160)))
+        .replace("__MOVELIST_HEIGHT__", str(movelist_height))
     )
     components.html(html, height=height, scrolling=False)
+
+
+def chess_play_board(
+    fen: str,
+    last_move_uci: str | None = None,
+    flipped: bool = False,
+    size: int = 480,
+) -> None:
+    """Render current board position as SVG via st.image.
+
+    Args:
+        fen:           FEN string of the position to display.
+        last_move_uci: Optional UCI string of the last move to highlight, e.g. "e2e4".
+        flipped:       If True, render board from Black's perspective.
+        size:          Square size in pixels passed to python-chess svg renderer.
+    """
+    from ui.board import render_board
+
+    svg = render_board(fen, last_move_uci=last_move_uci, size=size, flipped=flipped)
+    st.image(svg, use_container_width=True)
