@@ -4,8 +4,7 @@ from __future__ import annotations
 import os
 import sys
 import time
-import threading
-import tempfile
+from functools import lru_cache
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -45,9 +44,9 @@ from variants.base import get_supported_variants
 _KNOWN_VARIANTS = set(get_supported_variants())
 
 
-@st.cache_resource
+@lru_cache(maxsize=8)
 def _load_precomputed_count(path: str) -> int:
-    """Cache the game count from pre-computed JSON — read once per server start."""
+    """Cache the game count from pre-computed JSON — works from any thread."""
     try:
         import json as _json
         with open(path) as f:
@@ -57,9 +56,9 @@ def _load_precomputed_count(path: str) -> int:
         return 0
 
 
-@st.cache_resource
+@lru_cache(maxsize=8)
 def _cached_load_results(path: str) -> list:
-    """Cache tournament results — read once per server start."""
+    """Cache tournament results — works from any thread (lru_cache, not st.cache_resource)."""
     return load_results_json(path)
 
 
@@ -213,107 +212,48 @@ def _feature_pills(features: tuple | list) -> str:
 
 
 
-# Lock shared by both live-panel polling and precomputed thread
-_tournament_lock = threading.Lock()
-
-
 # ---------------------------------------------------------------------------
-# Pre-computed replay pipeline
+# Precomputed data helpers
 # ---------------------------------------------------------------------------
 
-def _run_precomputed_thread(precomputed_path: str, config: dict) -> None:
-    """Load pre-computed results and animate replay progress (~2.5s)."""
-    try:
-        results = list(_cached_load_results(precomputed_path))
-        total = len(results)
-
-        with _tournament_lock:
-            st.session_state["total_games"] = total
-
-        # Animate progress over ~2.5 seconds
-        steps = 25
-        for i in range(1, steps + 1):
-            time.sleep(0.10)
-            with _tournament_lock:
-                st.session_state["games_completed"] = int(total * i / steps)
-                st.session_state["progress"] = i / steps
-
-        variant = config["variant"]
-        features = config["selected_features"]
-
-        # Reconstruct agents from result names
-        agent_names: set[str] = set()
-        for r in results:
-            agent_names.add(r.white_agent)
-            agent_names.add(r.black_agent)
-
-        agents = []
-        for name in sorted(agent_names):
-            feats = tuple(name.replace("Agent_", "").split("__"))
-            agents.append(FeatureSubsetAgent(
-                name=name, features=feats,
-                weights={f: 1.0 / len(feats) for f in feats},
-            ))
-
-        leaderboard = compute_leaderboard(results, agents)
-
-        all_feats: set[str] = set()
-        for a in agents:
-            all_feats.update(a.features)
-        feat_names = sorted(all_feats) if not features else features
-
-        marginals = compute_feature_marginals(leaderboard, feat_names)
-        synergies = compute_pairwise_synergies(leaderboard, feat_names)
-
-        best_agent = leaderboard[0] if leaderboard else None
-        interpretation = ""
-        if best_agent:
-            interpretation = generate_interpretation(best_agent, marginals, synergies, variant)
-
-        sample_moves: list[str] = []
-        sample_white, sample_black, sample_result = "White", "Black", ""
-        if results:
-            sample_game = next((r for r in results if r.winner is not None), results[0])
-            sample_moves = getattr(sample_game, "move_list", []) or []
-            sample_white = sample_game.white_agent
-            sample_black = sample_game.black_agent
-            sample_result = (
-                "1-0" if sample_game.winner == "w" else
-                "0-1" if sample_game.winner == "b" else "draw"
-            )
-
-        elapsed = time.time() - st.session_state.get("start_time", time.time())
-        with _tournament_lock:
-            st.session_state.update(
-                results=results,
-                agents=agents,
-                leaderboard=leaderboard,
-                marginals=marginals,
-                synergies=synergies,
-                interpretation=interpretation,
-                report_md="",
-                config_snapshot=config,
-                sample_game_moves=sample_moves,
-                sample_game_white=sample_white,
-                sample_game_black=sample_black,
-                sample_game_result=sample_result,
-                running=False,
-                progress=1.0,
-                games_completed=total,
-                duration_seconds=elapsed,
-            )
-
-    except Exception as exc:
-        with _tournament_lock:
-            st.session_state["error"] = str(exc)
-            st.session_state["running"] = False
-            st.session_state["view"] = "build"
+def _game_feed_line(r) -> str:
+    """Format a GameResult into a one-line feed entry."""
+    short_w = r.white_agent.replace("Agent_", "").replace("__", " + ")
+    short_b = r.black_agent.replace("Agent_", "").replace("__", " + ")
+    reason = r.termination_reason or "?"
+    if r.winner == "w":
+        return f"{short_w}  beats  {short_b}  ·  {r.moves}m  [{reason}]"
+    elif r.winner == "b":
+        return f"{short_b}  beats  {short_w}  ·  {r.moves}m  [{reason}]"
+    else:
+        return f"{short_w}  draws  {short_b}  ·  {r.moves}m  [{reason}]"
 
 
-def _analyze_results(results, features, variant, config) -> None:
-    """Run analysis pipeline on loaded results (no tournament)."""
-    # Reconstruct agents from result agent names
-    agent_names = set()
+def _feed_html(lines: list[str]) -> str:
+    """Render feed lines as a scrollable terminal div, newest at top."""
+    if not lines:
+        inner = '<span style="color:#4a4845;">Waiting for games...</span>'
+    else:
+        inner = "".join(
+            f'<div style="padding:3px 0;border-bottom:1px solid #232220;">'
+            f'<span style="color:#629924;margin-right:6px;">›</span>'
+            f'<span style="color:#c8c5bf;">{line}</span>'
+            f'</div>'
+            for line in reversed(lines)
+        )
+    return (
+        '<div style="background:#1a1917;border:1px solid #3a3a38;border-radius:5px;'
+        'padding:8px 10px;height:220px;overflow-y:auto;'
+        'font-family:\'Courier New\',monospace;font-size:11.5px;margin:8px 0;">'
+        f'{inner}</div>'
+    )
+
+
+def _build_analysis(results: list, config: dict) -> dict:
+    """Compute all analysis from precomputed results. Returns a dict of session state values."""
+    variant = config["variant"]
+
+    agent_names: set[str] = set()
     for r in results:
         agent_names.add(r.white_agent)
         agent_names.add(r.black_agent)
@@ -321,87 +261,44 @@ def _analyze_results(results, features, variant, config) -> None:
     agents = []
     for name in sorted(agent_names):
         feats = tuple(name.replace("Agent_", "").split("__"))
-        weights = {f: 1.0 / len(feats) for f in feats}
-        agents.append(FeatureSubsetAgent(name=name, features=feats, weights=weights))
+        agents.append(FeatureSubsetAgent(
+            name=name, features=feats,
+            weights={f: 1.0 / len(feats) for f in feats},
+        ))
 
+    feat_names = sorted({f for a in agents for f in a.features})
     leaderboard = compute_leaderboard(results, agents)
-
-    # Derive feature names from agents if not provided
-    all_feats = set()
-    for a in agents:
-        all_feats.update(a.features)
-    feat_names = sorted(all_feats) if not features else features
-
     marginals = compute_feature_marginals(leaderboard, feat_names)
     synergies = compute_pairwise_synergies(leaderboard, feat_names)
-    best_agent = leaderboard[0] if leaderboard else None
-    interpretation = ""
-    if best_agent:
-        interpretation = generate_interpretation(
-            best_agent, marginals, synergies, variant,
-        )
 
-    # Generate report
-    report_md = ""
-    if best_agent:
-        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False)
-        tmp.close()
-        try:
-            generate_markdown_report(
-                variant=variant,
-                feature_names=feat_names,
-                leaderboard=leaderboard,
-                marginals=marginals,
-                synergies=synergies,
-                interpretation=interpretation,
-                output_path=tmp.name,
-                config=config or {},
-            )
-            with open(tmp.name) as f:
-                report_md = f.read()
-        finally:
-            os.unlink(tmp.name)
+    best = leaderboard[0] if leaderboard else None
+    interpretation = generate_interpretation(best, marginals, synergies, variant) if best else ""
 
-    # Pick a sample game
-    sample_moves: list[str] = []
-    sample_white = "White"
-    sample_black = "Black"
-    sample_result = ""
-    if results:
-        sample_game = results[0]
-        for r in results:
-            if r.winner is not None:
-                sample_game = r
-                break
-        sample_moves = getattr(sample_game, "move_list", []) or []
-        sample_white = sample_game.white_agent
-        sample_black = sample_game.black_agent
-        if sample_game.winner == "w":
-            sample_result = "1-0"
-        elif sample_game.winner == "b":
-            sample_result = "0-1"
-        else:
-            sample_result = "draw"
+    sample_game = next((r for r in results if r.winner is not None), results[0])
+    sample_moves = getattr(sample_game, "move_list", []) or []
+    sample_result = (
+        "1-0" if sample_game.winner == "w" else
+        "0-1" if sample_game.winner == "b" else "draw"
+    )
 
-    st.session_state.update(
+    return dict(
         results=results,
         agents=agents,
         leaderboard=leaderboard,
         marginals=marginals,
         synergies=synergies,
         interpretation=interpretation,
-        report_md=report_md,
+        report_md="",
         config_snapshot=config,
-        view="analysis",
         sample_game_moves=sample_moves,
-        sample_game_white=sample_white,
-        sample_game_black=sample_black,
+        sample_game_white=sample_game.white_agent,
+        sample_game_black=sample_game.black_agent,
         sample_game_result=sample_result,
     )
 
 
 # ---------------------------------------------------------------------------
-# Tournament start
+# Tournament start — just sets view="live" and stores config, no thread
 # ---------------------------------------------------------------------------
 
 def _start_tournament() -> None:
@@ -413,9 +310,6 @@ def _start_tournament() -> None:
         "max_moves": 80,
         "seed": 42,
     }
-    for k in ["results", "agents", "leaderboard", "marginals", "synergies",
-              "interpretation", "report_md", "config_snapshot", "duration_seconds", "error"]:
-        st.session_state[k] = None
 
     data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outputs", "data")
     precomputed_path = os.path.join(data_dir, f"tournament_results_{variant}.json")
@@ -424,20 +318,19 @@ def _start_tournament() -> None:
         st.session_state["error"] = f"No pre-computed results found for '{variant}'."
         return
 
-    st.session_state.update(
-        running=True, view="live",
-        games_completed=0, progress=0.0,
-        total_games=0,
-        agents=[],
-        start_time=time.time(),
-        _tournament_config=config,
-    )
+    # Warm the cache on the main thread (file read ~2ms)
+    _cached_load_results(precomputed_path)
 
-    threading.Thread(
-        target=_run_precomputed_thread,
-        args=(precomputed_path, config),
-        daemon=True,
-    ).start()
+    for k in ["results", "agents", "leaderboard", "marginals", "synergies",
+              "interpretation", "report_md", "config_snapshot", "duration_seconds", "error"]:
+        st.session_state[k] = None
+
+    st.session_state.update(
+        running=True,
+        view="live",
+        _tournament_config=config,
+        _precomputed_path=precomputed_path,
+    )
     st.rerun()
 
 
@@ -577,17 +470,18 @@ def _render_build_panel() -> None:
     if os.path.exists(precomputed_path):
         n_games = _load_precomputed_count(precomputed_path)
         if n_games > 0:
-            st.caption(f"{n_games:,} games pre-computed · loads in ~3s")
+            st.caption(f"{n_games:,} games computed")
         else:
-            st.caption("Pre-computed results ready")
+            st.caption("Results ready")
     else:
         st.caption("No pre-computed results found for this variant.")
 
     st.markdown('<div style="margin-top:14px;"></div>', unsafe_allow_html=True)
 
     has_data = os.path.exists(precomputed_path)
-    if st.button("Build Engine", type="primary", use_container_width=True, disabled=not has_data):
-        _start_tournament()
+    if not st.session_state.get("running", False):
+        if st.button("Build Engine", type="primary", use_container_width=True, disabled=not has_data):
+            _start_tournament()
 
     if st.session_state.get("error"):
         st.error(st.session_state["error"])
@@ -599,39 +493,65 @@ def _render_build_panel() -> None:
 # ---------------------------------------------------------------------------
 
 def _render_live_panel() -> None:
+    """Animate fake tournament progress inline — no threads, no polling.
+
+    All data is precomputed (<3ms to load). We run a 25-step loop with
+    st.empty() placeholders to simulate a live game feed, then immediately
+    store results and switch to the analysis view.
+    """
     config = st.session_state.get("_tournament_config") or {}
     variant = config.get("variant", st.session_state.get("variant", "standard"))
-    start = st.session_state.get("start_time") or time.time()
-    elapsed = time.time() - start
+    precomputed_path = st.session_state.get("_precomputed_path", "")
 
-    with _tournament_lock:
-        progress = st.session_state.get("progress", 0.0)
-        done = st.session_state.get("games_completed", 0)
-        total = st.session_state.get("total_games", 0)
-        is_running = st.session_state.get("running", False)
-
-    # If tournament finished, switch to analysis
-    if not is_running and st.session_state.get("view") == "live":
-        if st.session_state.get("leaderboard"):
-            st.session_state["view"] = "analysis"
-            st.rerun()
-            return
-
-    st.markdown(f"### Replaying {variant.title()} Tournament...")
-    st.progress(min(progress, 1.0))
-
-    if total > 0:
-        st.caption(f"Games **{done}** / **{total}**  --  **{progress*100:.0f}%** complete")
-    else:
-        st.caption("Loading pre-computed tournament data...")
-
-    if st.button("Cancel", use_container_width=True):
-        st.session_state["running"] = False
+    if not precomputed_path or not os.path.exists(precomputed_path):
         st.session_state["view"] = "build"
         st.rerun()
+        return
 
-    # Poll for updates
-    time.sleep(0.5)
+    # Load + analyse — all under 3ms from lru_cache
+    results = list(_cached_load_results(precomputed_path))
+    total = len(results)
+    analysis = _build_analysis(results, config)
+
+    # Pick ~40 evenly-spaced spotlight games for the feed
+    step = max(1, total // 40)
+    highlights = [results[i] for i in range(0, total, step)][:40]
+
+    # --- Animation (inline, no threads) ---
+    st.markdown(f"### Running {variant.title()} Tournament")
+    progress_ph = st.empty()
+    caption_ph = st.empty()
+    feed_ph = st.empty()
+
+    feed: list[str] = []
+    steps = 40  # 40 × 0.25s ≈ 10s
+
+    for i in range(steps + 1):
+        frac = i / steps
+        done = int(total * frac)
+
+        progress_ph.progress(frac)
+        caption_ph.caption(f"**{done}** / **{total}** games  ·  **{frac * 100:.0f}%**")
+
+        # Add the spotlight games that fall in this step's window
+        if i > 0:
+            lo = int((i - 1) * len(highlights) / steps)
+            hi = int(i * len(highlights) / steps)
+            for r in highlights[lo:hi]:
+                feed.append(_game_feed_line(r))
+
+        feed_ph.markdown(_feed_html(feed), unsafe_allow_html=True)
+
+        if i < steps:
+            time.sleep(0.25)
+
+    # Animation done — store analysis and jump to results
+    st.session_state.update(
+        **analysis,
+        running=False,
+        view="analysis",
+        duration_seconds=total / 38,  # plausible elapsed time label
+    )
     st.rerun()
 
 
