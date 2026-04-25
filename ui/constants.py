@@ -24,6 +24,15 @@ FEATURE_DISPLAY_NAMES: dict[str, str] = {
     "bishop_pair": "Bishop Pair",
     "rook_activity": "Rook Activity",
     "capture_threats": "Capture Threats",
+    "antichess_material": "Antichess Material ★",
+    "explosion_proximity": "Explosion Proximity ★",
+}
+
+# Features recommended per variant (beyond the universal set)
+VARIANT_RECOMMENDED_FEATURES: dict[str, list[str]] = {
+    "standard": ["material", "mobility", "king_safety", "capture_threats", "enemy_king_danger"],
+    "atomic":   ["mobility", "enemy_king_danger", "explosion_proximity", "capture_threats", "center_control"],
+    "antichess": ["antichess_material", "mobility", "capture_threats", "center_control", "piece_position"],
 }
 
 VARIANT_DESCRIPTIONS: dict[str, str] = {
