@@ -538,15 +538,16 @@ def _render_live_panel(board_ph=None) -> None:
     step = max(1, total // 40)
     highlights = [results[i] for i in range(0, total, step)][:40]
 
-    # Pick several long games to cycle through during the animation
+    # Pick several decisive games (someone wins) to cycle through during the
+    # animation, so each playthrough ends on an actual checkmate / king-loss.
     animation_games: list[list[str]] = []
     if board_ph is not None:
-        candidates = sorted(
-            (r for r in results if getattr(r, "move_list", None)),
-            key=lambda r: len(r.move_list),
-            reverse=True,
-        )
-        animation_games = [list(r.move_list) for r in candidates[:12]]
+        decisive = [r for r in results
+                    if getattr(r, "move_list", None) and r.winner is not None]
+        # Prefer decisive games; fall back to any game-with-moves if none decisive.
+        pool = decisive or [r for r in results if getattr(r, "move_list", None)]
+        pool.sort(key=lambda r: len(r.move_list), reverse=True)
+        animation_games = [list(r.move_list) for r in pool[:12]]
 
     # --- Animation (inline, no threads) ---
     st.markdown(f"### Running {variant.title()} Tournament")
@@ -1128,8 +1129,12 @@ def _handle_player_move(uci: str, variant: str, depth: int) -> None:
 
 
 def _handle_engine_move(variant: str, depth: int) -> None:
-    """Get and apply engine's move."""
+    """Get and apply engine's move with a small thinking delay."""
     fen = st.session_state["play_fen"]
+    # Brief "thinking" pause so play feels like a real online engine
+    # (Lichess/Chess.com style) instead of an instant reply.
+    import random as _r
+    time.sleep(_r.uniform(0.4, 1.1))
     engine_uci = _engine_reply(fen)
 
     if engine_uci is None:
