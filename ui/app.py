@@ -194,6 +194,21 @@ def _init_session_state() -> None:
             st.session_state[key] = list(default) if isinstance(default, list) else default
 
 
+def _render_nav(current_view: str) -> None:
+    """Horizontal nav tabs at top of panel column."""
+    has_results = bool(st.session_state.get("leaderboard"))
+    tabs = [("build", "⚙ Build"), ("analysis", "📊 Analysis"), ("play", "♟ Play")]
+    cols = st.columns(len(tabs))
+    for col, (view_id, label) in zip(cols, tabs):
+        disabled = (view_id in ("analysis", "play")) and not has_results
+        active = current_view == view_id
+        btn_label = f"**{label}**" if active else label
+        if col.button(btn_label, key=f"nav_{view_id}", use_container_width=True, disabled=disabled):
+            st.session_state["view"] = view_id
+            st.rerun()
+    st.markdown('<hr style="margin:6px 0 10px;">', unsafe_allow_html=True)
+
+
 def _agent_short_name(name: str) -> str:
     return name.replace("Agent_", "").replace("__", " + ")
 
@@ -268,6 +283,7 @@ def _build_analysis(results: list, config: dict) -> dict:
 
     feat_names = sorted({f for a in agents for f in a.features})
     leaderboard = compute_leaderboard(results, agents)
+
     marginals = compute_feature_marginals(leaderboard, feat_names)
     synergies = compute_pairwise_synergies(leaderboard, feat_names)
 
@@ -368,13 +384,15 @@ def _engine_reply(fen: str) -> str | None:
 _BOARD_PX = 460
 
 
-def _show_svg(svg: str) -> None:
+def _svg_html(svg: str) -> str:
+    """Resize an SVG board to _BOARD_PX and wrap in a centered flex div."""
     svg_fixed = re.sub(r'\bwidth="\d+(?:\.\d+)?"', f'width="{_BOARD_PX}"', svg, count=1)
     svg_fixed = re.sub(r'\bheight="\d+(?:\.\d+)?"', f'height="{_BOARD_PX}"', svg_fixed, count=1)
-    st.markdown(
-        f'<div style="display:flex;justify-content:center;">{svg_fixed}</div>',
-        unsafe_allow_html=True,
-    )
+    return f'<div style="display:flex;justify-content:center;">{svg_fixed}</div>'
+
+
+def _show_svg(svg: str) -> None:
+    st.markdown(_svg_html(svg), unsafe_allow_html=True)
 
 
 def _render_board_area() -> None:
@@ -492,12 +510,15 @@ def _render_build_panel() -> None:
 # Live panel (real progress from background thread)
 # ---------------------------------------------------------------------------
 
-def _render_live_panel() -> None:
+def _render_live_panel(board_ph=None) -> None:
     """Animate fake tournament progress inline — no threads, no polling.
 
-    All data is precomputed (<3ms to load). We run a 25-step loop with
+    All data is precomputed (<3ms to load). We run a step loop with
     st.empty() placeholders to simulate a live game feed, then immediately
     store results and switch to the analysis view.
+
+    If board_ph is provided, also animates a sample game's moves on the
+    board placeholder at high speed.
     """
     config = st.session_state.get("_tournament_config") or {}
     variant = config.get("variant", st.session_state.get("variant", "standard"))
@@ -517,6 +538,15 @@ def _render_live_panel() -> None:
     step = max(1, total // 40)
     highlights = [results[i] for i in range(0, total, step)][:40]
 
+    # Pick the longest game with moves for the board animation (so the
+    # whole tournament-running animation has plenty of moves to play through).
+    board_animation_moves: list[str] = []
+    if board_ph is not None:
+        candidates = [r for r in results if getattr(r, "move_list", None)]
+        if candidates:
+            longest = max(candidates, key=lambda r: len(r.move_list))
+            board_animation_moves = list(longest.move_list)
+
     # --- Animation (inline, no threads) ---
     st.markdown(f"### Running {variant.title()} Tournament")
     progress_ph = st.empty()
@@ -525,6 +555,10 @@ def _render_live_panel() -> None:
 
     feed: list[str] = []
     steps = 40  # 40 × 0.25s ≈ 10s
+
+    chess_board = chess.Board() if board_animation_moves else None
+    moves_played = 0
+    n_moves = len(board_animation_moves)
 
     for i in range(steps + 1):
         frac = i / steps
@@ -541,6 +575,28 @@ def _render_live_panel() -> None:
                 feed.append(_game_feed_line(r))
 
         feed_ph.markdown(_feed_html(feed), unsafe_allow_html=True)
+
+        # Advance the chess board through the sample game proportionally to
+        # the overall animation progress. If we exhaust the moves before the
+        # animation finishes, just hold the final position.
+        if chess_board is not None and board_ph is not None and n_moves > 0:
+            target = min(n_moves, int(round(n_moves * frac)))
+            last_uci: str | None = None
+            while moves_played < target:
+                uci = board_animation_moves[moves_played]
+                try:
+                    chess_board.push_uci(uci)
+                    last_uci = uci
+                except Exception:
+                    # Illegal move under standard rules (e.g. atomic-only): stop.
+                    moves_played = n_moves
+                    break
+                moves_played += 1
+            if last_uci is not None or i == 0:
+                svg = render_board(
+                    chess_board.fen(), last_move_uci=last_uci, size=_BOARD_PX,
+                )
+                board_ph.markdown(_svg_html(svg), unsafe_allow_html=True)
 
         if i < steps:
             time.sleep(0.25)
@@ -947,7 +1003,7 @@ def _render_play_panel() -> None:
     status = st.session_state.get("play_status", "ongoing")
 
     st.markdown(f"### vs {best_name}")
-    st.caption(f"{variant.title()} chess -- depth {depth}")
+    st.caption(f"{variant.title()} · live alpha-beta · depth {depth}")
 
     if features:
         st.markdown(
@@ -1003,26 +1059,21 @@ def _render_play_panel() -> None:
             if not legal:
                 st.warning("No legal moves!")
             else:
-                st.markdown(f"**Your turn** -- drag a piece to move")
-                # Compact dropdown fallback
-                with st.expander("Or type a move (UCI)"):
-                    selected = st.selectbox(
-                        "Move",
-                        options=legal,
-                        key="play_move_select",
-                        label_visibility="collapsed",
-                    )
-                    if st.button("Submit", use_container_width=True):
-                        _handle_player_move(selected, variant, depth)
+                st.caption("Drag a piece or click it, then click a highlighted square")
+                mc1, mc2 = st.columns([4, 1])
+                selected = mc1.selectbox(
+                    "Or pick UCI move",
+                    options=legal,
+                    key="play_move_select",
+                    label_visibility="collapsed",
+                )
+                if mc2.button("Go", use_container_width=True):
+                    _handle_player_move(selected, variant, depth)
         else:
             # Engine's turn — safety net (normally processed immediately)
             st.info(f"{best_name} is thinking...")
             _handle_engine_move(variant, depth)
 
-    st.markdown('<div style="margin-top:16px;"></div>', unsafe_allow_html=True)
-    if st.button("Back to Analysis", use_container_width=True):
-        st.session_state["view"] = "analysis"
-        st.rerun()
 
 
 def _handle_player_move(uci: str, variant: str, depth: int) -> None:
@@ -1135,12 +1186,22 @@ def main() -> None:
     st.markdown(HEADER_HTML, unsafe_allow_html=True)
     board_col, panel_col = st.columns([5, 4])
 
+    live_board_ph = None
     with board_col:
-        _render_board_area()
+        if view == "live":
+            live_board_ph = st.empty()
+            live_board_ph.markdown(
+                _svg_html(render_board(starting_fen(), size=_BOARD_PX)),
+                unsafe_allow_html=True,
+            )
+        else:
+            _render_board_area()
 
     with panel_col:
+        nav_view = view if view != "live" else "build"
+        _render_nav(nav_view)
         if view == "live":
-            _render_live_panel()
+            _render_live_panel(board_ph=live_board_ph)
         elif view == "analysis":
             _render_analysis_panel()
         elif view == "play":
