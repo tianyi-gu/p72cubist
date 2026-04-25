@@ -84,8 +84,13 @@ def tournament(
     depth: int = typer.Option(2, help="Search depth"),
     max_moves: int = typer.Option(80, help="Max plies per game"),
     seed: int = typer.Option(42, help="Random seed"),
-    max_agents: int = typer.Option(100, help="Max number of agents"),
+    max_agents: int = typer.Option(127, help="Max number of agents"),
     output: str = typer.Option(None, help="Output JSON path"),
+    use_llm: bool = typer.Option(False, "--use-llm/--no-use-llm", help="Use local DeepSeek (Ollama) to select features"),
+    ollama_model: str = typer.Option("deepseek-r1:7b", "--ollama-model", help="Ollama model name"),
+    ollama_url: str = typer.Option("http://localhost:11434/v1", "--ollama-url", help="Ollama base URL"),
+    refresh_llm: bool = typer.Option(False, "--refresh-llm", help="Ignore cached LLM feature selection"),
+    workers: int = typer.Option(0, "--workers", help="Parallel game workers (0=auto, 1=sequential)"),
 ) -> None:
     """Run a round-robin tournament."""
     from agents.feature_subset_agent import FeatureSubsetAgent
@@ -93,11 +98,14 @@ def tournament(
     from tournament.leaderboard import compute_leaderboard
     from tournament.results_io import save_results_json
 
-    agents = _get_agents(max_agents=max_agents, seed=seed)
+    agents = _get_agents(max_agents=max_agents, seed=seed, use_llm=use_llm,
+                         ollama_model=ollama_model, ollama_url=ollama_url,
+                         variant=variant, refresh_llm=refresh_llm)
     console.print(f"[bold]Tournament[/bold]: {len(agents)} agents, {variant}")
     console.print(f"Games: {len(agents) * (len(agents) - 1)}")
 
-    results = run_round_robin(agents, variant, depth, max_moves, seed)
+    results = run_round_robin(agents, variant, depth, max_moves, seed,
+                              max_workers=workers or None)
 
     lb = compute_leaderboard(results, agents)
     _print_leaderboard(lb)
@@ -146,8 +154,13 @@ def full_pipeline(
     depth: int = typer.Option(2, help="Search depth"),
     max_moves: int = typer.Option(80, help="Max plies per game"),
     seed: int = typer.Option(42, help="Random seed"),
-    max_agents: int = typer.Option(100, help="Max number of agents"),
+    max_agents: int = typer.Option(127, help="Max number of agents"),
     top_k: int = typer.Option(10, help="Top-K for marginal analysis"),
+    use_llm: bool = typer.Option(False, "--use-llm/--no-use-llm", help="Use local DeepSeek (Ollama) to select features"),
+    ollama_model: str = typer.Option("deepseek-r1:7b", "--ollama-model", help="Ollama model name"),
+    ollama_url: str = typer.Option("http://localhost:11434/v1", "--ollama-url", help="Ollama base URL"),
+    refresh_llm: bool = typer.Option(False, "--refresh-llm", help="Ignore cached LLM feature selection"),
+    workers: int = typer.Option(0, "--workers", help="Parallel game workers (0=auto, 1=sequential)"),
 ) -> None:
     """Run the full EngineLab pipeline end-to-end."""
     from agents.feature_subset_agent import FeatureSubsetAgent
@@ -165,7 +178,9 @@ def full_pipeline(
     console.print()
 
     # Step 1: Generate agents
-    agents = _get_agents(max_agents=max_agents, seed=seed)
+    agents = _get_agents(max_agents=max_agents, seed=seed, use_llm=use_llm,
+                         ollama_model=ollama_model, ollama_url=ollama_url,
+                         variant=variant, refresh_llm=refresh_llm)
     feature_names = sorted({f for a in agents for f in a.features})
     console.print(f"Features: {', '.join(feature_names)}")
     console.print(f"Agents: {len(agents)}")
@@ -174,7 +189,8 @@ def full_pipeline(
     console.print()
 
     # Step 2: Run tournament
-    results = run_round_robin(agents, variant, depth, max_moves, seed)
+    results = run_round_robin(agents, variant, depth, max_moves, seed,
+                              max_workers=workers or None)
 
     # Step 3: Compute leaderboard
     lb = compute_leaderboard(results, agents)
@@ -214,9 +230,35 @@ def full_pipeline(
     console.print(f"Report saved to {report_path}")
 
 
-def _get_agents(max_agents: int = 100, seed: int = 42):
-    """Get agents — try real generation, fall back to material-only."""
+def _get_agents(
+    max_agents: int = 127,
+    seed: int = 42,
+    use_llm: bool = False,
+    ollama_model: str = "deepseek-r1:7b",
+    ollama_url: str = "http://localhost:11434/v1",
+    variant: str = "standard",
+    refresh_llm: bool = False,
+):
+    """Get agents — LLM-guided or standard generation, fall back to material-only."""
     from agents.feature_subset_agent import FeatureSubsetAgent
+
+    if use_llm:
+        try:
+            from agents.generate_agents import generate_llm_selected_agents
+            from features.registry import get_feature_names, FEATURE_DESCRIPTIONS
+            console.print(f"[bold]LLM mode:[/bold] asking {ollama_model} to select best 7 features...")
+            agents = generate_llm_selected_agents(
+                get_feature_names(), FEATURE_DESCRIPTIONS, variant,
+                base_url=ollama_url, model=ollama_model, refresh=refresh_llm,
+            )
+            # Show which features were selected (all agents share the same feature universe)
+            all_features = sorted({f for a in agents for f in a.features})
+            console.print(f"LLM selected features: {', '.join(all_features)}")
+            return agents
+        except Exception as e:
+            console.print(f"[red]LLM generation failed: {e}[/red]")
+            console.print("[yellow]Falling back to standard generation.[/yellow]")
+
     try:
         from agents.generate_agents import generate_feature_subset_agents
         from features.registry import get_feature_names
