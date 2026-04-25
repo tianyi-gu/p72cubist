@@ -118,7 +118,7 @@ All 12 features compute a differential score (positive = good for the side to mo
 | `rook_activity` | Open file (+0.5), semi-open file (+0.25), and 7th rank (+0.5) bonuses for rooks. |
 | `capture_threats` | Sum of values of pieces that can be captured this turn. |
 | `negative_material` | Piece-count bonus for antichess: rewards having fewer pieces (closer to winning). |
-| `explosion_proximity` | Atomic-specific: rewards positioning pieces near clusters of enemy pieces to maximize explosion damage. |
+| `king_proximity` | Atomic-specific: counts own non-pawns adjacent to the enemy king (can trigger king-kill explosion) minus same for opponent. |
 
 ## Search Engine
 
@@ -232,7 +232,7 @@ features/               Evaluation feature implementations
   bishop_pair.py        Bishop pair bonus
   rook_activity.py      Open file and 7th rank bonuses
   negative_material.py Piece-count bonus for antichess win condition
-  explosion_proximity.py Proximity to enemy piece clusters (atomic)
+  king_proximity.py Adjacent non-pawns to enemy king vs own king (atomic)
 
 agents/                 Agent generation and evaluation
   feature_subset_agent.py   Frozen FeatureSubsetAgent dataclass
