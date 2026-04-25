@@ -25,7 +25,7 @@ interface AgentResult {
 
 function makeAgents(baseWeights: Record<string, number>): AgentResult[] {
   // Generate 4 variant agents that perturb the user's weights
-  const variants = [
+  const variants: { name: string; bias: Record<string, number> }[] = [
     { name: "Aggressor", bias: { king_danger: 1.6, capture_threats: 1.4, mobility: 1.2 } },
     { name: "Fortress", bias: { king_safety: 1.6, pawn_structure: 1.4, material: 1.2 } },
     { name: "Positional", bias: { piece_position: 1.5, center_control: 1.4, bishop_pair: 1.3 } },
@@ -35,7 +35,7 @@ function makeAgents(baseWeights: Record<string, number>): AgentResult[] {
     const w: Record<string, number> = {};
     for (const f of FEATURES) {
       const base = baseWeights[f.id] ?? 0;
-      const mult = (v.bias as Record<string, number>)[f.id] ?? 1;
+      const mult = v.bias[f.id] ?? 1;
       w[f.id] = base * mult;
     }
     return {
