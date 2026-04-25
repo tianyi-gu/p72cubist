@@ -473,25 +473,29 @@ LEGAL_MOVES.forEach(function(uci) {
 });
 
 var dragging = false;
+var dragSource = null;
 
-var board = Chessboard('board', {
-  position: '__FEN__',
-  pieceTheme: '__PIECE_THEME__',
-  boardWidth: 460,
-  draggable: true,
-  dropOffBoard: 'snapback',
-  onDragStart: onDragStart,
-  onDrop: onDrop,
-  onSnapEnd: function() { board.position('__FEN__'); dragging = false; },
-  onMouseoverSquare: function(sq) { if (!dragging) onMouseover(sq); },
-  onMouseoutSquare: function() { if (!dragging) onMouseout(); },
-});
+function createBoard() {
+  return Chessboard('board', {
+    position: '__FEN__',
+    pieceTheme: '__PIECE_THEME__',
+    draggable: true,
+    dropOffBoard: 'snapback',
+    onDragStart: onDragStart,
+    onDrop: onDrop,
+    onSnapEnd: function() { board.position('__FEN__'); dragging = false; dragSource = null; },
+    onMouseoverSquare: function(sq) { if (!dragging) onMouseover(sq); },
+    onMouseoutSquare: function() { if (!dragging) onMouseout(); },
+  });
+}
+var board = createBoard();
 
 function onDragStart(source, piece) {
   if (GAME_STATUS !== 'ongoing') return false;
   if (piece.search(/^b/) !== -1) return false;
   if (!legalTargets[source] || legalTargets[source].length === 0) return false;
   dragging = true;
+  dragSource = source;
   onMouseout();  // clear any hover highlights
   // Show legal targets for the dragged piece
   var pos = board.position();
@@ -502,6 +506,7 @@ function onDragStart(source, piece) {
 }
 
 function onDrop(source, target) {
+  dragSource = null;  // mark handled so backup handler is a no-op
   onMouseout();  // clear highlights
   if (!legalTargets[source] || legalTargets[source].indexOf(target) === -1) {
     return 'snapback';
@@ -558,8 +563,7 @@ function onMouseout() {
   });
 }
 
-// Apply last-move and explosion highlights
-(function applyHighlights() {
+function applyHighlights() {
   LAST_MOVE_SQUARES.forEach(function(sq) {
     var el = document.querySelector('.square-' + sq);
     if (el) el.classList.add('highlight-lastmove');
@@ -568,7 +572,55 @@ function onMouseout() {
     var el = document.querySelector('.square-' + sq);
     if (el) el.classList.add('highlight-explosion');
   });
-})();
+}
+applyHighlights();
+
+// Backup drop handler — fixes chessboard.js drag-drop in Streamlit iframes
+// where the library's jQuery mouseup binding silently fails to fire.
+// Uses raw addEventListener which bypasses jQuery. If chessboard.js's native
+// handler works, dragSource is already null (cleared in onDrop) so this is a no-op.
+document.addEventListener('mouseup', function(e) {
+  if (!dragSource) return;
+  var src = dragSource;
+  dragSource = null;
+  dragging = false;
+
+  // Calculate target square from mouse position relative to the board grid
+  var boardDiv = document.querySelector('.board-b72b1');
+  var target = null;
+  if (boardDiv) {
+    var rect = boardDiv.getBoundingClientRect();
+    var bw = 2; // border-width from CSS
+    var x = e.clientX - rect.left - bw;
+    var y = e.clientY - rect.top - bw;
+    var inner = rect.width - 2 * bw;
+    if (x >= 0 && y >= 0 && x < inner && y < inner) {
+      var col = Math.min(7, Math.floor(8 * x / inner));
+      var row = Math.min(7, Math.floor(8 * y / inner));
+      target = String.fromCharCode(97 + col) + String(8 - row);
+    }
+  }
+
+  // Destroy and recreate the board to fully reset chessboard.js internal
+  // drag state (isDragging flag, mousemove binding, floating piece element).
+  board.destroy();
+  board = createBoard();
+  onMouseout();
+  applyHighlights();
+
+  if (!target || target === src) return;
+  if (!legalTargets[src] || legalTargets[src].indexOf(target) === -1) return;
+
+  // Pawn promotion
+  var pos = board.position();
+  if (pos[src] === 'wP' && target[1] === '8') {
+    pendingPromotion = { from: src, to: target };
+    document.getElementById('promo-modal').classList.add('show');
+    return;
+  }
+
+  sendMove(src + target);
+});
 
 $(window).resize(function() { board.resize(); });
 </script>
