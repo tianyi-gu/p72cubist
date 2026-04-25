@@ -18,7 +18,7 @@ import streamlit as st
 
 from ui.constants import (
     ALL_FEATURES, FEATURE_DISPLAY_NAMES, SESSION_DEFAULTS,
-    VARIANT_DESCRIPTIONS,
+    VARIANT_DESCRIPTIONS, VARIANT_RECOMMENDED_FEATURES,
 )
 from ui.board import render_board, starting_fen
 from ui.chess_viewer import chess_game_viewer
@@ -163,11 +163,12 @@ HEADER_HTML = (
     '</div>'
 )
 
-PRESETS = {
-    "Quick":    ["material", "king_safety", "capture_threats"],
-    "Standard": ["material", "king_safety", "capture_threats", "mobility", "enemy_king_danger"],
-    "Full":     list(ALL_FEATURES),
-}
+def _get_presets(variant: str) -> dict[str, list[str]]:
+    rec = VARIANT_RECOMMENDED_FEATURES.get(variant, VARIANT_RECOMMENDED_FEATURES["standard"])
+    return {
+        "Recommended": rec,
+        "Full":        list(ALL_FEATURES),
+    }
 
 _CHART_THEME = dict(
     paper_bgcolor="#272522",
@@ -604,7 +605,7 @@ def _render_build_panel() -> None:
     st.markdown("### Build Your Own Engine")
     st.caption("Run a new tournament (takes longer)")
 
-    # Variant selector
+    # Variant selector — switching variant auto-loads recommended features
     st.caption("VARIANT")
     v_cols = st.columns(3)
     for col, v in zip(v_cols, ["standard", "atomic", "antichess"]):
@@ -612,15 +613,24 @@ def _render_build_panel() -> None:
         label = ("✓ " if active else "") + v.title()
         if col.button(label, key=f"v_{v}", use_container_width=True):
             st.session_state["variant"] = v
+            st.session_state["selected_features"] = list(
+                VARIANT_RECOMMENDED_FEATURES.get(v, ALL_FEATURES)
+            )
             st.rerun()
 
-    st.markdown('<div style="margin-top:12px;"></div>', unsafe_allow_html=True)
+    variant_desc = VARIANT_DESCRIPTIONS.get(st.session_state["variant"], "")
+    if variant_desc:
+        st.caption(variant_desc)
+
+    st.markdown('<div style="margin-top:10px;"></div>', unsafe_allow_html=True)
 
     # Feature multiselect + presets
     st.caption("FEATURES")
-    p_cols = st.columns(3)
-    for col, (label, feats) in zip(p_cols, PRESETS.items()):
-        if col.button(label, key=f"p_{label}", use_container_width=True):
+    current_variant = st.session_state["variant"]
+    presets = _get_presets(current_variant)
+    p_cols = st.columns(len(presets))
+    for col, (label, feats) in zip(p_cols, presets.items()):
+        if col.button(label, key=f"p_{label}_{current_variant}", use_container_width=True):
             st.session_state["selected_features"] = list(feats)
             st.rerun()
 
