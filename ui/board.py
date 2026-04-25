@@ -9,6 +9,14 @@ import chess
 import chess.svg
 
 
+def _strip_extended_fen(fen: str) -> str:
+    """Strip variant-specific FEN extensions (e.g. three-check '+N+M') for python-chess."""
+    parts = fen.split()
+    if len(parts) > 6:
+        return " ".join(parts[:6])
+    return fen
+
+
 def render_board(
     fen: str,
     last_move_uci: str | None = None,
@@ -28,7 +36,7 @@ def render_board(
     Returns:
         SVG string representation of the board.
     """
-    board = chess.Board(fen)
+    board = chess.Board(_strip_extended_fen(fen))
 
     lastmove = _parse_uci_move(last_move_uci)
     fill = _build_explosion_fill(exploded_squares)
