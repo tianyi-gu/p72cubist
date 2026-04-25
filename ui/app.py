@@ -545,16 +545,16 @@ def _render_live_panel(board_ph=None) -> None:
     step = max(1, total // 40)
     highlights = [results[i] for i in range(0, total, step)][:40]
 
-    # Pick several decisive games (someone wins) to cycle through during the
-    # animation, so each playthrough ends on an actual checkmate / king-loss.
+    # Use ALL decisive games (someone wins) for the animation, sorted by
+    # length so dramatic long games come first. We blast through them at
+    # max speed during the 10s window.
     animation_games: list[list[str]] = []
     if board_ph is not None:
         decisive = [r for r in results
                     if getattr(r, "move_list", None) and r.winner is not None]
-        # Prefer decisive games; fall back to any game-with-moves if none decisive.
         pool = decisive or [r for r in results if getattr(r, "move_list", None)]
         pool.sort(key=lambda r: len(r.move_list), reverse=True)
-        animation_games = [list(r.move_list) for r in pool[:12]]
+        animation_games = [list(r.move_list) for r in pool]
 
     # --- Animation (inline, no threads) ---
     st.markdown(f"### Running {variant.title()} Tournament")
@@ -566,9 +566,10 @@ def _render_live_panel(board_ph=None) -> None:
     spotlight_idx = 0
 
     ANIMATION_DURATION = 10.0
-    MOVE_INTERVAL = 0.055   # ~18 moves/sec — super fast playthrough
+    MOVE_INTERVAL = 0.012   # target ~80 moves/sec — render+network usually
+                            # caps real rate around 40-50/sec, looks like a blur
     PROGRESS_INTERVAL = 0.22
-    TICK = 0.02
+    TICK = 0.005
 
     # Variant-aware move application for the animation
     from core.board import Board as _ProjBoard
