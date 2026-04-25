@@ -28,11 +28,21 @@ FEATURE_DISPLAY_NAMES: dict[str, str] = {
     "explosion_proximity": "Explosion Proximity ★",
 }
 
-# Features recommended per variant (beyond the universal set)
-VARIANT_RECOMMENDED_FEATURES: dict[str, list[str]] = {
-    "standard": ["material", "mobility", "king_safety", "capture_threats", "enemy_king_danger"],
-    "atomic":   ["mobility", "enemy_king_danger", "explosion_proximity", "capture_threats", "center_control"],
-    "antichess": ["antichess_material", "mobility", "capture_threats", "center_control", "piece_position"],
+# Curated top-8 features per variant (ordered by importance)
+# Atomic/antichess-specific features are placed near the top for their respective variants.
+VARIANT_TOP_8_FEATURES: dict[str, list[str]] = {
+    "standard": [
+        "material", "mobility", "king_safety", "enemy_king_danger",
+        "capture_threats", "center_control", "piece_position", "pawn_structure",
+    ],
+    "atomic": [
+        "mobility", "enemy_king_danger", "explosion_proximity",
+        "center_control", "capture_threats", "material", "piece_position", "bishop_pair",
+    ],
+    "antichess": [
+        "antichess_material", "center_control", "mobility", "enemy_king_danger",
+        "pawn_structure", "material", "piece_position", "king_safety",
+    ],
 }
 
 VARIANT_DESCRIPTIONS: dict[str, str] = {
