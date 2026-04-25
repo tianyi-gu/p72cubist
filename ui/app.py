@@ -47,6 +47,24 @@ from variants.base import get_supported_variants
 _KNOWN_VARIANTS = set(get_supported_variants())
 
 
+@st.cache_resource
+def _load_precomputed_count(path: str) -> int:
+    """Cache the game count from pre-computed JSON — read once per server start."""
+    try:
+        import json as _json
+        with open(path) as f:
+            data = _json.load(f)
+        return len(data)
+    except Exception:
+        return 0
+
+
+@st.cache_resource
+def _cached_load_results(path: str) -> list:
+    """Cache tournament results — read once per server start."""
+    return load_results_json(path)
+
+
 def _normalize_variant(label: str) -> str:
     """Map a variant label (e.g. 'atomic_d3') to the base variant ('atomic')."""
     if label in _KNOWN_VARIANTS:
@@ -334,7 +352,7 @@ def _run_tournament_thread(config: dict) -> None:
 def _run_precomputed_thread(precomputed_path: str, config: dict) -> None:
     """Load pre-computed results and animate replay progress (~2.5s)."""
     try:
-        results = load_results_json(precomputed_path)
+        results = list(_cached_load_results(precomputed_path))
         total = len(results)
 
         with _tournament_lock:
@@ -685,13 +703,10 @@ def _render_build_panel() -> None:
     # Tournament stats from pre-computed file
     precomputed_path = os.path.join(data_dir, f"tournament_results_{variant}.json")
     if os.path.exists(precomputed_path):
-        try:
-            import json as _json
-            with open(precomputed_path) as _f:
-                _data = _json.load(_f)
-            n_games = len(_data)
+        n_games = _load_precomputed_count(precomputed_path)
+        if n_games > 0:
             st.caption(f"{n_games:,} games pre-computed · replays in ~3s")
-        except Exception:
+        else:
             st.caption("Pre-computed results ready")
     else:
         st.caption("No pre-computed results found for this variant.")
