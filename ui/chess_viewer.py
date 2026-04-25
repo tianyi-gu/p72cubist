@@ -3,7 +3,7 @@ Chess board rendering utilities for the EngineLab Streamlit UI.
 
 Public functions:
   chess_game_viewer — interactive game replay (chessboard.js, server-side FEN)
-  chess_play_dnd   — drag-and-drop play board (chessboard.js, server-side logic)
+  chess_play_dnd   — drag-and-drop play board (pointer events, server-side logic)
   chess_play_board — static SVG position viewer (python-chess)
 """
 from __future__ import annotations
@@ -385,229 +385,327 @@ def _build_move_label(board, move, uci: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Drag-and-drop play board (components.html + query param communication)
+# Drag-and-drop play board — custom pointer-event implementation
+#
+# Uses setPointerCapture so drag works correctly inside Streamlit iframes.
+# The browser delivers pointermove/pointerup to the capturing element even
+# when the pointer exits the iframe boundary — this is how Lichess's
+# chessground library implements drag.  No jQuery / chessboard.js needed.
 # ---------------------------------------------------------------------------
 
 _DND_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<script src="https://code.jquery.com/jquery-3.7.1.min.js" crossorigin="anonymous"></script>
-<link rel="stylesheet"
-      href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
-      crossorigin="anonymous">
-<script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"
-        crossorigin="anonymous"></script>
 <style>
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  background: #161512;
-  display: flex; flex-direction: column; align-items: center;
-  padding: 4px 0 0;
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:#161512;
+  display:flex;flex-direction:column;align-items:center;
+  padding:4px 0 0;
+  -webkit-user-select:none;user-select:none;
+  overflow:hidden;
 }
-#board { width: 460px; cursor: pointer; }
-.board-b72b1 { border: 2px solid #2c2b29 !important; border-radius: 2px; }
-
-/* Legal move dots */
-.highlight-legal {
-  background: radial-gradient(circle, rgba(98,153,36,0.45) 24%, transparent 25%) !important;
+#wrap{position:relative}
+/* squares */
+.sq{position:absolute}
+.sq-l{background:#f0d9b5}
+.sq-d{background:#b58863}
+/* pieces */
+.piece{position:absolute;touch-action:none;cursor:grab;z-index:2}
+.piece.no-moves{cursor:default}
+/* persistent highlights sit below pieces */
+.hl{position:absolute;pointer-events:none;z-index:1}
+.hl-lm {background:rgba(155,199,0,.41)}
+.hl-sel{background:rgba(20,85,30,.5)}
+.hl-exp{background:rgba(255,107,53,.5)}
+/* legal-move dots sit above pieces */
+.dot{position:absolute;pointer-events:none;z-index:4}
+/* ghost follows cursor at viewport coords so it escapes the iframe clip */
+#ghost{position:fixed;pointer-events:none;z-index:9999;display:none}
+/* coordinate labels */
+.lbl{position:absolute;font-size:10px;font-weight:700;pointer-events:none;z-index:5;line-height:1}
+/* promotion modal */
+#promo{
+  display:none;position:fixed;inset:0;
+  background:rgba(0,0,0,.78);z-index:10000;
+  justify-content:center;align-items:center;
 }
-.highlight-capture {
-  background: radial-gradient(circle, transparent 50%, rgba(98,153,36,0.45) 51%) !important;
+#promo.on{display:flex}
+.pb{
+  width:60px;height:60px;background:#1f1e1c;
+  border:1px solid #3a3a38;border-radius:6px;
+  cursor:pointer;font-size:34px;
+  display:flex;align-items:center;justify-content:center;color:#d0cfc8;padding:0;
 }
-/* Last move highlight */
-.highlight-lastmove {
-  background-color: rgba(155, 199, 0, 0.35) !important;
-}
-/* Selected piece */
-.highlight-selected {
-  background-color: rgba(98, 153, 36, 0.55) !important;
-}
-/* Atomic explosion highlight */
-.highlight-explosion {
-  background-color: rgba(255, 107, 53, 0.45) !important;
-}
-
-/* Promotion modal */
-#promo-modal {
-  display:none; position:fixed; inset:0;
-  background:rgba(0,0,0,0.7); z-index:999;
-  justify-content:center; align-items:center;
-}
-#promo-modal.show { display:flex; }
-.promo-opts {
-  background:#272522; border:1px solid #3a3a38;
-  border-radius:8px; padding:16px 20px; display:flex; gap:10px;
-}
-.promo-btn {
-  width:56px; height:56px; background:#1f1e1c;
-  border:1px solid #3a3a38; border-radius:5px;
-  cursor:pointer; font-size:32px;
-  display:flex; align-items:center; justify-content:center; color:#d0cfc8;
-}
-.promo-btn:hover { background:#3a3a38; }
+.pb:hover{background:#3a3a38}
 </style>
 </head>
 <body>
 
-<div id="promo-modal">
-  <div class="promo-opts">
-    <button class="promo-btn" onclick="doPromotion('q')">&#9819;</button>
-    <button class="promo-btn" onclick="doPromotion('r')">&#9820;</button>
-    <button class="promo-btn" onclick="doPromotion('b')">&#9821;</button>
-    <button class="promo-btn" onclick="doPromotion('n')">&#9822;</button>
+<div id="promo">
+  <div style="background:#272522;border:1px solid #3a3a38;border-radius:8px;padding:16px;display:flex;gap:12px">
+    <button class="pb" onclick="doPromo('q')">&#9813;</button>
+    <button class="pb" onclick="doPromo('r')">&#9814;</button>
+    <button class="pb" onclick="doPromo('b')">&#9815;</button>
+    <button class="pb" onclick="doPromo('n')">&#9816;</button>
   </div>
 </div>
 
-<div id="board"></div>
+<div id="wrap"></div>
+<img id="ghost" alt="">
 
 <script>
-var LEGAL_MOVES = __LEGAL_MOVES__;
-var GAME_STATUS = "__STATUS__";
-var LAST_MOVE_SQUARES = __LAST_MOVE_SQUARES__;
-var EXPLODED_SQUARES = __EXPLODED_SQUARES__;
-var pendingPromotion = null;
-var selectedSquare = null;
+// ── Injected by Python ────────────────────────────────────────────────────────
+var FEN    = '__FEN__';
+var LEGAL  = __LEGAL_MOVES__;
+var STATUS = '__STATUS__';
+var LM     = __LAST_MOVE_SQUARES__;
+var EXP    = __EXPLODED_SQUARES__;
+var PT     = '__PIECE_THEME__';
+var BS     = __BOARD_SIZE__;
 
-// Build lookup: source -> [target, ...]
-var legalTargets = {};
-LEGAL_MOVES.forEach(function(uci) {
-  var from = uci.substring(0,2), to = uci.substring(2,4);
-  if (!legalTargets[from]) legalTargets[from] = [];
-  legalTargets[from].push(to);
-});
+var SQ    = BS / 8;
+var wrap  = document.getElementById('wrap');
+var ghost = document.getElementById('ghost');
 
-// Board — display only, no drag (drag doesn't work in Streamlit iframes)
-var board = Chessboard('board', {
-  position: '__FEN__',
-  pieceTheme: '__PIECE_THEME__',
-  draggable: false,
-  onMouseoverSquare: function(sq) { if (!selectedSquare) onMouseover(sq); },
-  onMouseoutSquare: function() { if (!selectedSquare) onMouseout(); },
-});
+wrap.style.cssText  = 'position:relative;width:'+BS+'px;height:'+BS+'px;border:2px solid #2c2b29;border-radius:2px';
+ghost.style.cssText = 'width:'+SQ+'px;height:'+SQ+'px';
 
-// ── Click-to-move ───────────────────────────────────────────────────────────
-document.getElementById('board').addEventListener('click', function(e) {
-  if (GAME_STATUS !== 'ongoing') return;
-  // Walk up from click target to find the square element
-  var el = e.target;
-  var square = null;
-  while (el && el.id !== 'board') {
-    if (el.className && typeof el.className === 'string') {
-      var m = el.className.match(/square-([a-h][1-8])/);
-      if (m) { square = m[1]; break; }
-    }
-    el = el.parentElement;
-  }
-  if (!square) return;
-
-  var pos = board.position();
-  var piece = pos[square];
-
-  if (selectedSquare) {
-    // ── A piece is already selected ──
-    if (square === selectedSquare) {
-      deselect(); return;                          // click same piece → deselect
-    }
-    if (legalTargets[selectedSquare] && legalTargets[selectedSquare].indexOf(square) !== -1) {
-      // Legal target → make the move
-      var srcPiece = pos[selectedSquare];
-      if (srcPiece === 'wP' && square[1] === '8') {
-        pendingPromotion = { from: selectedSquare, to: square };
-        deselect();
-        document.getElementById('promo-modal').classList.add('show');
-        return;
+// ── FEN parser ────────────────────────────────────────────────────────────────
+function parseFEN(fen) {
+  var ranks = fen.split(' ')[0].split('/'), pos = {};
+  for (var r = 0; r < 8; r++) {
+    var col = 0;
+    for (var i = 0; i < ranks[r].length; i++) {
+      var ch = ranks[r][i];
+      if (ch >= '1' && ch <= '8') { col += +ch; }
+      else {
+        pos[String.fromCharCode(97+col)+(8-r)] =
+          (ch === ch.toUpperCase() ? 'w' : 'b') + ch.toUpperCase();
+        col++;
       }
-      var uci = selectedSquare + square;
-      deselect();
-      sendMove(uci);
-      return;
     }
-    // Click another own piece with moves → switch selection
-    if (piece && piece[0] === 'w' && legalTargets[square] && legalTargets[square].length > 0) {
-      deselect(); selectPiece(square); return;
-    }
-    deselect(); return;                            // click elsewhere → deselect
   }
+  return pos;
+}
 
-  // ── No piece selected ──
-  if (piece && piece[0] === 'w' && legalTargets[square] && legalTargets[square].length > 0) {
-    selectPiece(square);
-  }
+// ── Coordinate helpers ────────────────────────────────────────────────────────
+function sqXY(sq) {
+  return { x: (sq.charCodeAt(0)-97)*SQ, y: (8-+sq[1])*SQ };
+}
+function xySq(x, y) {
+  var c = Math.floor(x/SQ), r = Math.floor(y/SQ);
+  return (c>=0&&c<8&&r>=0&&r<8) ? String.fromCharCode(97+c)+(8-r) : null;
+}
+function pimg(code) { return PT.replace('{piece}', code); }
+
+// ── Legal-move map ────────────────────────────────────────────────────────────
+var lmap = {};
+LEGAL.forEach(function(u) {
+  var f = u.slice(0,2), t = u.slice(2,4);
+  if (!lmap[f]) lmap[f] = [];
+  lmap[f].push(t);
 });
 
-function selectPiece(square) {
-  selectedSquare = square;
-  onMouseout(); // clear hover hints
-  var el = document.querySelector('.square-' + square);
-  if (el) el.classList.add('highlight-selected');
-  var pos = board.position();
-  (legalTargets[square] || []).forEach(function(t) {
-    var e = document.querySelector('.square-' + t);
-    if (e) e.classList.add(pos[t] ? 'highlight-capture' : 'highlight-legal');
+// ── Build 64 squares ──────────────────────────────────────────────────────────
+for (var r = 0; r < 8; r++) {
+  for (var c = 0; c < 8; c++) {
+    var sq = String.fromCharCode(97+c)+(8-r);
+    var d  = document.createElement('div');
+    d.className    = 'sq ' + ((r+c)%2 ? 'sq-d' : 'sq-l');
+    d.style.cssText = 'left:'+c*SQ+'px;top:'+r*SQ+'px;width:'+SQ+'px;height:'+SQ+'px';
+    d.dataset.sq   = sq;
+    if (r === 7) {
+      var fl = document.createElement('span');
+      fl.className='lbl'; fl.textContent=sq[0];
+      fl.style.cssText='bottom:2px;right:3px;color:'+((r+c)%2?'#f0d9b5':'#b58863');
+      d.appendChild(fl);
+    }
+    if (c === 0) {
+      var rl = document.createElement('span');
+      rl.className='lbl'; rl.textContent=8-r;
+      rl.style.cssText='top:2px;left:3px;color:'+((r+c)%2?'#f0d9b5':'#b58863');
+      d.appendChild(rl);
+    }
+    wrap.appendChild(d);
+  }
+}
+
+// ── Render pieces ─────────────────────────────────────────────────────────────
+var pos = parseFEN(FEN), pels = {};
+function renderPieces() {
+  Object.values(pels).forEach(function(e){ e.remove(); }); pels = {};
+  Object.keys(pos).forEach(function(sq) {
+    var code = pos[sq], xy = sqXY(sq);
+    var p = document.createElement('img');
+    p.src = pimg(code); p.alt = code; p.draggable = false;
+    p.dataset.sq = sq; p.dataset.code = code;
+    var canMove = STATUS==='ongoing' && code[0]==='w' && lmap[sq] && lmap[sq].length;
+    p.className = 'piece' + (canMove ? '' : ' no-moves');
+    p.style.cssText = 'left:'+xy.x+'px;top:'+xy.y+'px;width:'+SQ+'px;height:'+SQ+'px';
+    wrap.appendChild(p); pels[sq] = p;
   });
 }
+renderPieces();
 
-function deselect() {
-  selectedSquare = null;
-  document.querySelectorAll('.highlight-selected,.highlight-legal,.highlight-capture').forEach(function(e) {
-    e.classList.remove('highlight-selected', 'highlight-legal', 'highlight-capture');
+// ── Persistent highlights ────────────────────────────────────────────────────
+function addHL(sq, cls) {
+  var xy = sqXY(sq), e = document.createElement('div');
+  e.className = 'hl ' + cls;
+  e.style.cssText = 'left:'+xy.x+'px;top:'+xy.y+'px;width:'+SQ+'px;height:'+SQ+'px';
+  wrap.appendChild(e); return e;
+}
+LM.forEach(function(s)  { addHL(s, 'hl-lm');  });
+EXP.forEach(function(s) { addHL(s, 'hl-exp'); });
+
+// ── Selection + legal-move dots ───────────────────────────────────────────────
+var dotEls = [], selEl = null;
+function showDots(from) {
+  clearSel();
+  selEl = addHL(from, 'hl-sel');
+  (lmap[from]||[]).forEach(function(to) {
+    var xy  = sqXY(to);
+    var dot = document.createElement('div');
+    dot.className = 'dot';
+    dot.style.cssText = 'left:'+xy.x+'px;top:'+xy.y+'px;width:'+SQ+'px;height:'+SQ+'px';
+    var t = Math.round(SQ*.09);
+    if (pos[to]) {
+      // ring around occupied square
+      dot.innerHTML = '<div style="width:100%;height:100%;border-radius:50%;border:'+t+'px solid rgba(20,85,30,.5);box-sizing:border-box"></div>';
+    } else {
+      // filled circle on empty square
+      var ds = Math.round(SQ*.28), off = Math.round((SQ-ds)/2);
+      dot.innerHTML = '<div style="position:absolute;width:'+ds+'px;height:'+ds+'px;top:'+off+'px;left:'+off+'px;background:rgba(20,85,30,.5);border-radius:50%"></div>';
+    }
+    wrap.appendChild(dot); dotEls.push(dot);
   });
 }
-
-// ── Promotion ───────────────────────────────────────────────────────────────
-function doPromotion(p) {
-  document.getElementById('promo-modal').classList.remove('show');
-  if (!pendingPromotion) return;
-  sendMove(pendingPromotion.from + pendingPromotion.to + p);
-  pendingPromotion = null;
+function clearSel() {
+  dotEls.forEach(function(d){ d.remove(); }); dotEls = [];
+  if (selEl) { selEl.remove(); selEl = null; }
 }
 
-// ── Send move to Python via query params ────────────────────────────────────
+// ── Promotion ─────────────────────────────────────────────────────────────────
+var pendingPromo = null;
+function tryMove(from, to, code) {
+  if (code === 'wP' && to[1] === '8') {
+    pendingPromo = {from:from, to:to};
+    document.getElementById('promo').classList.add('on');
+    return;
+  }
+  sendMove(from+to);
+}
+function doPromo(p) {
+  document.getElementById('promo').classList.remove('on');
+  if (pendingPromo) { sendMove(pendingPromo.from+pendingPromo.to+p); pendingPromo = null; }
+}
+
+// ── Move → Streamlit via URL query param ──────────────────────────────────────
+// Uses pushState + popstate so the page does NOT reload — Streamlit's
+// query-params watcher detects the change and re-runs while keeping
+// session state intact.  Falls back to full navigation if cross-origin
+// access blocks history manipulation.
 function sendMove(uci) {
   try {
-    var url = new URL(window.parent.location.href);
+    var w = window.parent;
+    var url = new URL(w.location.href);
     url.searchParams.set('chess_move', uci);
-    window.parent.location.href = url.toString();
+    w.history.pushState({}, '', url.toString());
+    w.dispatchEvent(new PopStateEvent('popstate'));
   } catch(e) {
-    window.top.location.search = '?chess_move=' + uci;
+    try {
+      window.parent.location.search = '?chess_move=' + encodeURIComponent(uci);
+    } catch(e2) {
+      window.top.location.search = '?chess_move=' + encodeURIComponent(uci);
+    }
   }
 }
 
-// ── Hover hints (only when no piece is selected) ────────────────────────────
-function onMouseover(square) {
-  if (GAME_STATUS !== 'ongoing') return;
-  var targets = legalTargets[square];
-  if (!targets) return;
-  var el = document.querySelector('.square-' + square);
-  if (el) el.classList.add('highlight-legal');
-  var pos = board.position();
-  targets.forEach(function(t) {
-    var e = document.querySelector('.square-' + t);
-    if (!e) return;
-    e.classList.add(pos[t] ? 'highlight-capture' : 'highlight-legal');
-  });
-}
+// ── DRAG — pointer events + setPointerCapture ─────────────────────────────────
+//
+// setPointerCapture keeps pointer events on the capturing element even when
+// the pointer leaves the iframe.  This is the same technique used by Lichess's
+// chessground library for reliable iframe drag.
+//
+var drag = null;
 
-function onMouseout() {
-  document.querySelectorAll('.highlight-legal,.highlight-capture').forEach(function(e) {
-    e.classList.remove('highlight-legal','highlight-capture');
-  });
-}
+wrap.addEventListener('pointerdown', function(e) {
+  if (STATUS !== 'ongoing') return;
+  var el = e.target;
+  while (el && el !== wrap && !(el.tagName === 'IMG' && el.dataset.sq))
+    el = el.parentElement;
+  if (!el || el === wrap) return;
+  var sq   = el.dataset.sq;
+  var code = el.dataset.code;
+  if (!code || code[0] !== 'w' || !lmap[sq] || !lmap[sq].length) return;
 
-// ── Last-move and explosion highlights ──────────────────────────────────────
-(function() {
-  LAST_MOVE_SQUARES.forEach(function(sq) {
-    var el = document.querySelector('.square-' + sq);
-    if (el) el.classList.add('highlight-lastmove');
-  });
-  EXPLODED_SQUARES.forEach(function(sq) {
-    var el = document.querySelector('.square-' + sq);
-    if (el) el.classList.add('highlight-explosion');
-  });
-})();
+  e.preventDefault();
+  el.setPointerCapture(e.pointerId);  // keep events in iframe even outside bounds
 
-$(window).resize(function() { board.resize(); });
+  clearSel(); selected = null;
+  drag = {sq:sq, code:code, el:el};
+  el.style.opacity = '.25';
+
+  ghost.src = pimg(code);
+  ghost.style.cssText = (
+    'position:fixed;pointer-events:none;z-index:9999;display:block;' +
+    'width:'+SQ+'px;height:'+SQ+'px;' +
+    'left:'+(e.clientX-SQ/2)+'px;top:'+(e.clientY-SQ/2)+'px'
+  );
+  showDots(sq);
+}, {passive:false});
+
+wrap.addEventListener('pointermove', function(e) {
+  if (!drag) return;
+  e.preventDefault();
+  ghost.style.left = (e.clientX-SQ/2)+'px';
+  ghost.style.top  = (e.clientY-SQ/2)+'px';
+}, {passive:false});
+
+wrap.addEventListener('pointerup', function(e) {
+  if (!drag) return;
+  e.preventDefault();
+  ghost.style.display = 'none';
+  drag.el.style.opacity = '';
+  var rect = wrap.getBoundingClientRect();
+  var to   = xySq(e.clientX-rect.left, e.clientY-rect.top);
+  var from = drag.sq, code = drag.code;
+  clearSel(); drag = null;
+  if (to && lmap[from] && lmap[from].indexOf(to) !== -1) tryMove(from, to, code);
+});
+
+wrap.addEventListener('pointercancel', function() {
+  if (!drag) return;
+  ghost.style.display = 'none';
+  drag.el.style.opacity = '';
+  clearSel(); drag = null;
+});
+
+// ── CLICK-TO-MOVE (tap / accessibility fallback) ──────────────────────────────
+var selected = null;
+
+wrap.addEventListener('click', function(e) {
+  if (STATUS !== 'ongoing' || drag) return;
+  var rect = wrap.getBoundingClientRect();
+  var sq   = xySq(e.clientX-rect.left, e.clientY-rect.top);
+  if (!sq) return;
+
+  if (selected) {
+    var prev = selected;
+    if (prev === sq) { clearSel(); selected = null; return; }
+    if (lmap[prev] && lmap[prev].indexOf(sq) !== -1) {
+      var code = pos[prev]; clearSel(); selected = null;
+      tryMove(prev, sq, code); return;
+    }
+    clearSel(); selected = null;
+    // fall through — maybe selecting a different own piece
+  }
+  var code2 = pos[sq];
+  if (code2 && code2[0] === 'w' && lmap[sq] && lmap[sq].length) {
+    selected = sq; showDots(sq);
+  }
+});
 </script>
 </body>
 </html>
@@ -620,27 +718,29 @@ def chess_play_dnd(
     status: str = "ongoing",
     last_move_uci: str | None = None,
     exploded_squares: list[str] | None = None,
+    board_size: int = 460,
     height: int = 520,
 ) -> None:
-    """Render a drag-and-drop chess board for interactive play.
+    """Render an interactive chess board for play.
 
-    Moves are communicated back to Streamlit via query params.
-    All game logic stays server-side.
+    Uses pointer events + setPointerCapture for reliable drag-and-drop
+    inside Streamlit iframes.  Click-to-move works as a tap/fallback.
+    Moves are sent to Streamlit via URL query params → st.query_params.
     """
-    # Build last-move square pair from UCI (e.g. "e2e4" → ["e2","e4"])
-    if last_move_uci and len(last_move_uci) >= 4:
-        lm_squares = [last_move_uci[:2], last_move_uci[2:4]]
-    else:
-        lm_squares = []
+    lm_squares = (
+        [last_move_uci[:2], last_move_uci[2:4]]
+        if last_move_uci and len(last_move_uci) >= 4 else []
+    )
 
     html = (
         _DND_TEMPLATE
-        .replace("__FEN__", fen)
-        .replace("__LEGAL_MOVES__", json.dumps(legal_moves))
-        .replace("__STATUS__", status)
+        .replace("'__FEN__'",            "'" + fen + "'")
+        .replace("__LEGAL_MOVES__",       json.dumps(legal_moves))
+        .replace("'__STATUS__'",          "'" + status + "'")
         .replace("__LAST_MOVE_SQUARES__", json.dumps(lm_squares))
-        .replace("__EXPLODED_SQUARES__", json.dumps(exploded_squares or []))
-        .replace("__PIECE_THEME__", _PIECE_THEME_URL)
+        .replace("__EXPLODED_SQUARES__",  json.dumps(exploded_squares or []))
+        .replace("'__PIECE_THEME__'",     "'" + _PIECE_THEME_URL + "'")
+        .replace("__BOARD_SIZE__",        str(board_size))
     )
     components.html(html, height=height, scrolling=False)
 
