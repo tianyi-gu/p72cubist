@@ -59,7 +59,7 @@ VARIANT_FEATURES: dict[str, tuple[list[str], int]] = {
     "horde": (
         ["material", "pawn_structure", "center_control", "mobility",
          "piece_position", "capture_threats", "king_safety", "enemy_king_danger"],
-        80,
+        200,  # Horde games are pawn-grind long; <150 caps almost everything as draws
     ),
 }
 

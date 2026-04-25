@@ -792,7 +792,8 @@ def _render_live_panel(board_ph=None) -> None:
             exploded_local = _detect_explosions(cur_fen, new_fen_local, uci)
         return new_fen_local, exploded_local
 
-    current_fen = chess.STARTING_FEN if animation_games else None
+    _animation_start_fen = _starting_fen_for_variant(variant)
+    current_fen = _animation_start_fen if animation_games else None
     game_idx = 0
     move_idx = 0
 
@@ -827,7 +828,7 @@ def _render_live_panel(board_ph=None) -> None:
             if move_idx >= len(cur_game):
                 # Finished current game; advance to next and reset board
                 game_idx = (game_idx + 1) % len(animation_games)
-                current_fen = chess.STARTING_FEN
+                current_fen = _animation_start_fen
                 move_idx = 0
                 cur_game = animation_games[game_idx]
 
