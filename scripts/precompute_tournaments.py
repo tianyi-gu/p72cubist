@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agents.generate_agents import generate_feature_subset_agents
 from analysis.feature_marginals import compute_feature_marginals
+from tournament.leaderboard import compute_leaderboard
 from tournament.round_robin import run_round_robin
 
 VARIANT_FEATURES: dict[str, tuple[list[str], int]] = {
@@ -78,10 +79,11 @@ def _run_variant(variant: str, features: list[str], max_moves: int,
     with open(path, "w") as f:
         json.dump(out, f)
 
-    marginals = compute_feature_marginals(results, features)
-    sorted_m = sorted(marginals.items(), key=lambda x: -x[1])
+    leaderboard = compute_leaderboard(results, agents)
+    marginals = compute_feature_marginals(leaderboard, features)
+    top4 = marginals[:4]
     print(f"  [{variant}] Marginals: " +
-          ", ".join(f"{k}={v:+.3f}" for k, v in sorted_m[:4]))
+          ", ".join(f"{r.feature}={r.marginal:+.3f}" for r in top4))
     return {"variant": variant, "games": len(results), "elapsed": elapsed, "marginals": marginals}
 
 
