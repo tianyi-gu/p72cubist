@@ -33,10 +33,8 @@ from ui.play_engine import (
 
 # Real backend imports
 from agents.feature_subset_agent import FeatureSubsetAgent
-from agents.generate_agents import generate_feature_subset_agents
-from tournament.round_robin import run_round_robin
 from tournament.leaderboard import compute_leaderboard
-from tournament.results_io import load_results_json, save_results_json
+from tournament.results_io import load_results_json
 from analysis.feature_marginals import compute_feature_marginals
 from analysis.synergy import compute_pairwise_synergies
 from analysis.interpretation import generate_interpretation
@@ -215,134 +213,8 @@ def _feature_pills(features: tuple | list) -> str:
 
 
 
-# ---------------------------------------------------------------------------
-# Real tournament pipeline (runs in background thread)
-# ---------------------------------------------------------------------------
-
+# Lock shared by both live-panel polling and precomputed thread
 _tournament_lock = threading.Lock()
-
-
-def _run_tournament_thread(config: dict) -> None:
-    """Run the full tournament pipeline in a background thread."""
-    try:
-        features = config["selected_features"]
-        variant = config["variant"]
-        depth = config["depth"]
-        max_moves = config.get("max_moves", 80)
-        seed = config.get("seed", 42)
-
-        # Step 1: Generate agents
-        agents = generate_feature_subset_agents(
-            feature_names=features,
-            max_agents=100,
-            seed=seed,
-        )
-        with _tournament_lock:
-            st.session_state["agents"] = agents
-
-        # Step 2: Run round-robin with progress callback
-        def on_game_complete(done: int, total: int, result) -> None:
-            with _tournament_lock:
-                st.session_state["games_completed"] = done
-                st.session_state["total_games"] = total
-                st.session_state["progress"] = done / total if total > 0 else 0.0
-
-        results = run_round_robin(
-            agents=agents,
-            variant=variant,
-            depth=depth,
-            max_moves=max_moves,
-            seed=seed,
-            on_game_complete=on_game_complete,
-        )
-
-        # Step 3: Compute leaderboard
-        leaderboard = compute_leaderboard(results, agents)
-
-        # Step 4: Compute analysis
-        marginals = compute_feature_marginals(leaderboard, features)
-        synergies = compute_pairwise_synergies(leaderboard, features)
-
-        # Step 5: Generate interpretation
-        best_agent = leaderboard[0] if leaderboard else None
-        interpretation = ""
-        if best_agent:
-            interpretation = generate_interpretation(
-                best_agent, marginals, synergies, variant,
-            )
-
-        # Step 6: Generate report markdown
-        report_md = ""
-        if best_agent:
-            tmp = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".md", delete=False,
-            )
-            tmp.close()
-            try:
-                generate_markdown_report(
-                    variant=variant,
-                    feature_names=features,
-                    leaderboard=leaderboard,
-                    marginals=marginals,
-                    synergies=synergies,
-                    interpretation=interpretation,
-                    output_path=tmp.name,
-                    config=config,
-                )
-                with open(tmp.name) as f:
-                    report_md = f.read()
-            finally:
-                os.unlink(tmp.name)
-
-        # Step 7: Pick a sample game for the viewer
-        sample_moves: list[str] = []
-        sample_white = "White"
-        sample_black = "Black"
-        sample_result = ""
-        if results:
-            # Pick the first game that has a decisive result, or fall back to first
-            sample_game = results[0]
-            for r in results:
-                if r.winner is not None:
-                    sample_game = r
-                    break
-            sample_moves = sample_game.move_list
-            sample_white = sample_game.white_agent
-            sample_black = sample_game.black_agent
-            if sample_game.winner == "w":
-                sample_result = "1-0"
-            elif sample_game.winner == "b":
-                sample_result = "0-1"
-            else:
-                sample_result = "draw"
-
-        elapsed = time.time() - st.session_state.get("start_time", time.time())
-
-        # Commit all results to session state
-        with _tournament_lock:
-            st.session_state.update(
-                results=results,
-                leaderboard=leaderboard,
-                marginals=marginals,
-                synergies=synergies,
-                interpretation=interpretation,
-                report_md=report_md,
-                config_snapshot=config,
-                duration_seconds=round(elapsed, 1),
-                progress=1.0,
-                running=False,
-                view="analysis",
-                sample_game_moves=sample_moves,
-                sample_game_white=sample_white,
-                sample_game_black=sample_black,
-                sample_game_result=sample_result,
-            )
-
-    except Exception as exc:
-        with _tournament_lock:
-            st.session_state["error"] = str(exc)
-            st.session_state["running"] = False
-            st.session_state["view"] = "build"
 
 
 # ---------------------------------------------------------------------------
